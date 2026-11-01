@@ -1,0 +1,6 @@
+{
+  "name": "wecollect Enquêtes",
+  "description": "Application mobile wecollect de collecte et de synchronisation des enquêtes de terrain avec validations locales et mode hors-ligne",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
