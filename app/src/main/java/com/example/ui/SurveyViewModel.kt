@@ -118,8 +118,15 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
 
-    private val _selectedQuestionnaireId = MutableStateFlow<Long?>(null)
+    private val _selectedQuestionnaireId = MutableStateFlow<Long?>(sessionManager.getSelectedQuestionnaireId())
     val selectedQuestionnaireId: StateFlow<Long?> = _selectedQuestionnaireId.asStateFlow()
+
+    // Isan'ny fanontaniana voatahiry an-toerana (SQLite) isaky ny questionnaire
+    val questionCountByQuestionnaire: StateFlow<Map<Long, Int>> = repository.allQuestions
+        .map { questions ->
+            questions.groupBy { it.idQuestionnaire }.mapValues { it.value.size }
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
     // Real-time Supabase sync monitoring states
     private val _lastRealtimeSyncTime = MutableStateFlow(System.currentTimeMillis())
@@ -225,13 +232,19 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
         val user = _loggedInUser.value ?: return
         viewModelScope.launch {
             repository.markAnnonceAsRead(idAnnonce, user.idUser)
-            syncService.markAnnonceAsReadRemote(idAnnonce, user.idUser)
+            val ok = if (isConnectedAndOnline.value && !_isForceOffline.value) {
+                syncService.markAnnonceAsReadRemote(idAnnonce, user.idUser)
+            } else false
+            if (!ok) {
+                sessionManager.addPendingAnnonceRead(idAnnonce, user.idUser)
+            }
         }
     }
 
     fun deleteAnnonce(idAnnonce: String) {
         viewModelScope.launch {
             repository.deleteAnnonce(idAnnonce)
+            sessionManager.removePendingAnnonceSync(idAnnonce)
         }
     }
 
@@ -306,9 +319,49 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
         } else emptyList()
 
         viewModelScope.launch {
+            // Tehirizina avy hatrany ao amin'ny finday (SQLite Room)
             repository.saveAnnonce(entity, files)
-            val ok = syncService.createAnnonceRemote(entity, files)
+            val ok = if (isConnectedAndOnline.value && !_isForceOffline.value) {
+                syncService.createAnnonceRemote(entity, files)
+            } else false
+
+            if (!ok) {
+                // Raha tsy misy connexion na miola dia tehirizina ho pending mba halefa avy hatrany rehefa miverina ny Internet
+                sessionManager.addPendingAnnonceSync(newId)
+            }
             onResult(ok)
+        }
+    }
+
+    suspend fun processPendingAnnonces() {
+        if (!isConnectedAndOnline.value || _isForceOffline.value) return
+        val pendingSyncIds = sessionManager.getPendingAnnonceSyncIds()
+        for (id in pendingSyncIds) {
+            val annonce = repository.getAnnonceById(id)
+            if (annonce != null) {
+                val files = repository.getFichiersForAnnonce(id)
+                val ok = syncService.createAnnonceRemote(annonce, files)
+                if (ok) {
+                    sessionManager.removePendingAnnonceSync(id)
+                }
+            } else {
+                sessionManager.removePendingAnnonceSync(id)
+            }
+        }
+
+        val pendingReads = sessionManager.getPendingAnnonceReads()
+        for (readKey in pendingReads) {
+            val parts = readKey.split("_")
+            if (parts.size == 2) {
+                val idAnnonce = parts[0]
+                val userId = parts[1].toLongOrNull()
+                if (userId != null && idAnnonce.isNotBlank()) {
+                    val ok = syncService.markAnnonceAsReadRemote(idAnnonce, userId)
+                    if (ok) {
+                        sessionManager.removePendingAnnonceRead(idAnnonce, userId)
+                    }
+                }
+            }
         }
     }
 
@@ -932,6 +985,12 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
         }
         refreshSavedAccounts()
 
+        // 0.05. Miantoka fa voatahiry tsara sy vonona an-toerana foana ny annonces (SQLite Room)
+        viewModelScope.launch {
+            repository.ensureDefaultAnnoncesExist()
+            processPendingAnnonces()
+        }
+
         // 0.1. Fanaraha-maso d'inactivité de 30 minutes (Sécurité automatique vers l'écran de login)
         viewModelScope.launch {
             while (isActive) {
@@ -996,8 +1055,17 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 } else {
                     // Initialization
-                    if (_selectedQuestionnaireId.value == null && currentList.isNotEmpty()) {
-                        _selectedQuestionnaireId.value = currentList.first().idQuestionnaire
+                    if (currentList.isNotEmpty()) {
+                        val savedId = sessionManager.getSelectedQuestionnaireId()
+                        val matchingSaved = if (savedId != null) currentList.find { it.idQuestionnaire == savedId } else null
+                        val idToSelect = matchingSaved?.idQuestionnaire ?: _selectedQuestionnaireId.value ?: currentList.first().idQuestionnaire
+                        _selectedQuestionnaireId.value = idToSelect
+                        sessionManager.saveSelectedQuestionnaireId(idToSelect)
+                        restoreActiveDraftIfAny(idToSelect)
+                    } else {
+                        viewModelScope.launch {
+                            repository.ensurePublishedQuestionnaireExists()
+                        }
                     }
                 }
             }
@@ -1019,6 +1087,7 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
 
                         // Process any pending deletions from offline mode
                         processPendingDeletions()
+                        processPendingAnnonces()
 
                         // 1. Manaraka haingana isa segondra ny questionnaire (PUBLIÉ <-> BROUILLON)
                         syncService.quickCheckQuestionnairesRealtime()
@@ -1113,10 +1182,16 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             try {
                 repository.seedInitialDataIfEmpty()
+                repository.ensurePublishedQuestionnaireExists()
                 refreshLoggedInUserInternal()
                 _codeUnique.value = generateUniqueCode()
                 checkCodeDuplicateDebounced(_codeUnique.value)
-                if (!_isForceOffline.value) {
+                val currentQId = _selectedQuestionnaireId.value ?: repository.getAllQuestionnairesList().firstOrNull()?.idQuestionnaire
+                if (currentQId != null) {
+                    _selectedQuestionnaireId.value = currentQId
+                    restoreActiveDraftIfAny(currentQId)
+                }
+                if (!_isForceOffline.value && isConnectedAndOnline.value) {
                     pullFormsFromSupabase()
                 }
             } catch (_: Throwable) {
@@ -1269,9 +1344,16 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
                     val currentSelected = _selectedQuestionnaireId.value
                     if (currentSelected == null || updatedList.none { it.idQuestionnaire == currentSelected }) {
                         _selectedQuestionnaireId.value = updatedList.first().idQuestionnaire
+                        restoreActiveDraftIfAny(updatedList.first().idQuestionnaire)
                     }
                 } else {
-                    _selectedQuestionnaireId.value = null
+                    repository.ensurePublishedQuestionnaireExists()
+                    val recovered = repository.getAllQuestionnairesList().filter { !SyncService.isDraftStatus(it.statut) }
+                    if (recovered.isNotEmpty()) {
+                        val recId = recovered.first().idQuestionnaire
+                        _selectedQuestionnaireId.value = recId
+                        restoreActiveDraftIfAny(recId)
+                    }
                 }
             } catch (e: Throwable) {
                 _isPullingForm.value = false
@@ -1906,6 +1988,89 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
             codeError = codeError,
             dateError = dateError
         )
+        persistActiveDraft()
+    }
+
+    /**
+     * Mitahiry an-toerana ny valinteny rehetra eo am-pamenoana (Auto-save draft)
+     * Tsy very mihitsy ny asa na miovaova na tapaka aza ny connexion.
+     */
+    fun persistActiveDraft() {
+        val qId = _selectedQuestionnaireId.value ?: questionnaire.value?.idQuestionnaire ?: return
+        val currentResponses = _textResponses.value
+        val currentOpts = _selectedOptions.value
+        val currentAutres = _autreResponses.value
+        if (currentResponses.isNotEmpty() || currentOpts.isNotEmpty() || currentAutres.isNotEmpty()) {
+            sessionManager.saveFormDraft(
+                questionnaireId = qId,
+                codeUnique = _codeUnique.value,
+                dateEnquete = _dateEnquete.value,
+                textResponses = currentResponses,
+                selectedOptions = currentOpts,
+                autreResponses = currentAutres
+            )
+        }
+    }
+
+    /**
+     * Mamerina ny valinteny efa nosoratana ho an'ity questionnaire ity
+     */
+    fun restoreActiveDraftIfAny(qId: Long) {
+        val draft = sessionManager.getFormDraft(qId)
+        if (draft != null && (draft.textResponses.isNotEmpty() || draft.selectedOptions.isNotEmpty())) {
+            if (draft.codeUnique.isNotBlank()) {
+                _codeUnique.value = draft.codeUnique
+            }
+            if (draft.dateEnquete.isNotBlank()) {
+                _dateEnquete.value = draft.dateEnquete
+            }
+            _textResponses.value = draft.textResponses
+            _selectedOptions.value = draft.selectedOptions
+            _autreResponses.value = draft.autreResponses
+            recalculateValidation()
+        }
+    }
+
+    /**
+     * Mitahiry mivantana ao amin'ny SQLite ny valinteny amin'ny maha brouillon na dia tsy feno aza ny fanontaniana rehetra.
+     * Izany dia manome antoka fa tsy misy fatiantoka na dia miovaova na tapaka aza ny connexion.
+     */
+    fun saveDraftLocally(onComplete: (Boolean, String) -> Unit = { _, _ -> }) {
+        val q = questionnaire.value ?: run {
+            onComplete(false, "Tsy misy questionnaire mavitrika")
+            return
+        }
+        val u = _loggedInUser.value ?: run {
+            onComplete(false, "Mila miditra amin'ny kaonty aloha")
+            return
+        }
+        val qList = questions.value
+        val submittedCode = _codeUnique.value.trim().ifBlank { generateUniqueCode() }
+
+        viewModelScope.launch {
+            try {
+                val result = repository.saveEnquete(
+                    codeUnique = submittedCode,
+                    questionnaireId = q.idQuestionnaire,
+                    enqueteurId = u.idUser,
+                    dateEnquete = _dateEnquete.value,
+                    responses = _textResponses.value,
+                    selectedOptions = _selectedOptions.value,
+                    questions = qList
+                )
+                result.onSuccess {
+                    sessionManager.clearFormDraft(q.idQuestionnaire)
+                    _formMessage.value = Pair("Voatahiry soa aman-tsara amin'ny local SQLite ny fanadihadiana ($submittedCode)", false)
+                    syncService.addLog("Fiche $submittedCode voatahiry eo an-toerana ao amin'ny SQLite.", false)
+                    onComplete(true, "Voatahiry ao amin'ny finday ny fanadihadiana!")
+                }.onFailure { err ->
+                    _formMessage.value = Pair(err.localizedMessage ?: "Tsy nahomby ny fitahirizana", true)
+                    onComplete(false, err.localizedMessage ?: "Erreur")
+                }
+            } catch (e: Exception) {
+                onComplete(false, e.localizedMessage ?: "Erreur")
+            }
+        }
     }
 
     fun submitSurvey(andSync: Boolean = true) {
@@ -1950,6 +2115,7 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
 
             result.onSuccess { newEnqueteId ->
                 lastSubmittedCodeTracker = submittedCode
+                sessionManager.clearFormDraft(q.idQuestionnaire)
                 val isOnlineNow = isConnectedAndOnline.value
                 resetForm(submittedCode = submittedCode)
                 _formMessage.value = null
@@ -1960,9 +2126,9 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
                     syncService.addLog("Fiche $submittedCode enregistrée en local (SQLite) et synchronisée.", true)
                     syncService.syncSingleById(newEnqueteId)
                 } else {
-                    val msg = "Enquête $submittedCode enregistrée localement dans SQLite sans perte. Elle sera synchronisée dès le retour du réseau."
+                    val msg = "Enquête $submittedCode enregistrée localement dans SQLite sans perte. Voatahiry mandrakizay amin'ny local!"
                     _formMessage.value = Pair(msg, false)
-                    syncService.addLog("Fiche $submittedCode enregistrée avec succès dans SQLite (Hors-ligne).", false)
+                    syncService.addLog("Fiche $submittedCode voatahiry soa aman-tsara ao amin'ny SQLite (Hors-ligne).", false)
                 }
             }.onFailure { err ->
                 _formMessage.value = Pair(err.localizedMessage ?: "Erreur d'enregistrement", true)
@@ -1975,6 +2141,8 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun resetForm(submittedCode: String? = null) {
+        val qId = _selectedQuestionnaireId.value ?: questionnaire.value?.idQuestionnaire
+        qId?.let { sessionManager.clearFormDraft(it) }
         val nextCode = generateUniqueCode(forceNextSequence = submittedCode != null, excludeCode = submittedCode)
         _codeUnique.value = nextCode
         _dateEnquete.value = getTodayDate()
@@ -2067,11 +2235,35 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun selectQuestionnaire(id: Long) {
+        persistActiveDraft()
         _selectedQuestionnaireId.value = id
+        sessionManager.saveSelectedQuestionnaireId(id)
         _textResponses.value = emptyMap()
         _selectedOptions.value = emptyMap()
         _autreResponses.value = emptyMap()
+        restoreActiveDraftIfAny(id)
         checkCodeDuplicateDebounced(_codeUnique.value)
+
+        val qTitle = allQuestionnaires.value.find { it.idQuestionnaire == id }?.titre
+        if (qTitle != null) {
+            _liveUpdateNotification.value = "✅ Questionnaire « $qTitle » voasafidy."
+        }
+    }
+
+    fun ensureLocalQuestionnairesReady() {
+        viewModelScope.launch {
+            repository.ensurePublishedQuestionnaireExists()
+            val list = repository.getAllQuestionnairesList().filter { !SyncService.isDraftStatus(it.statut) }
+            if (list.isNotEmpty()) {
+                val currentSelected = _selectedQuestionnaireId.value
+                val idToSelect = if (currentSelected != null && list.any { it.idQuestionnaire == currentSelected }) {
+                    currentSelected
+                } else {
+                    sessionManager.getSelectedQuestionnaireId() ?: list.first().idQuestionnaire
+                }
+                selectQuestionnaire(idToSelect)
+            }
+        }
     }
 
     fun checkQuestionnairesRealtimeNow() {
@@ -2082,6 +2274,7 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun syncAllPendingSilently() {
         viewModelScope.launch {
+            processPendingAnnonces()
             val user = _loggedInUser.value ?: currentUser.value
             val enqueteurId = if (user != null && !user.role.equals("ADMIN", ignoreCase = true)) user.idUser else null
             val result = syncService.synchronizeAll(enqueteurId)
@@ -2093,6 +2286,7 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
 
     fun syncAllPending() {
         viewModelScope.launch {
+            processPendingAnnonces()
             val user = _loggedInUser.value ?: currentUser.value
             val enqueteurId = if (user != null && !user.role.equals("ADMIN", ignoreCase = true)) user.idUser else null
             syncService.synchronizeAll(enqueteurId)

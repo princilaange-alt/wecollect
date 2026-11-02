@@ -1494,11 +1494,11 @@ class SyncService(private val repository: SurveyRepository) {
                 } catch (_: Exception) {}
             }
 
-            // 2. Supprimer uniquement les questionnaires réellement supprimés dans Supabase
+            // 2. Supprimer uniquement les questionnaires réellement supprimés dans Supabase (en protégeant les questionnaires par défaut)
             if (parsedList.isNotEmpty()) {
                 val allRemoteIds = parsedList.map { it.idQuestionnaire }.toSet()
                 for (localQ in allLocalRaw) {
-                    if (localQ.idQuestionnaire != 1L && !allRemoteIds.contains(localQ.idQuestionnaire)) {
+                    if (localQ.idQuestionnaire != 1L && localQ.idQuestionnaire != 12L && !allRemoteIds.contains(localQ.idQuestionnaire)) {
                         hasChanged = true
                         try {
                             repository.deleteQuestionnaireCompletely(localQ.idQuestionnaire)

@@ -170,6 +170,7 @@ fun SurveyFormScreen(
     val liveUpdateNotification by viewModel.liveUpdateNotification.collectAsState()
     val lastRealtimeSyncTime by viewModel.lastRealtimeSyncTime.collectAsState()
     val duplicateDetectionDialog by viewModel.duplicateDetectionDialog.collectAsState()
+    val questionCounts by viewModel.questionCountByQuestionnaire.collectAsState()
 
     var showQuestionnaireSheet by remember { mutableStateOf(false) }
 
@@ -178,6 +179,15 @@ fun SurveyFormScreen(
             showQuestionnaireSheet = false
         } else if (duplicateDetectionDialog != null) {
             viewModel.dismissDuplicateDialog()
+        }
+    }
+
+    LaunchedEffect(questions.isEmpty()) {
+        if (questions.isEmpty()) {
+            delay(300)
+            if (questions.isEmpty()) {
+                viewModel.ensureDefaultSurveyExists()
+            }
         }
     }
 
@@ -390,29 +400,27 @@ fun SurveyFormScreen(
                         textAlign = TextAlign.Center,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = if (allQuestionnaires.size > 1) 40.dp else 12.dp)
+                            .padding(horizontal = 42.dp)
+                            .clickable { showQuestionnaireSheet = true }
+                            .testTag("txt_questionnaire_titre_header")
                     )
 
-                    if (allQuestionnaires.size > 1) {
-                        IconButton(
-                            onClick = { showQuestionnaireSheet = true },
-                            modifier = Modifier
-                                .align(Alignment.CenterEnd)
-                                .size(36.dp)
-                                .pressScaleEffect(0.85f)
-                                .testTag("btn_titre_questionnaire_three_lines")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Menu,
-                                contentDescription = "Changer de questionnaire",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
+                    IconButton(
+                        onClick = { showQuestionnaireSheet = true },
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .size(38.dp)
+                            .pressScaleEffect(0.85f)
+                            .testTag("btn_titre_questionnaire_three_lines")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Menu,
+                            contentDescription = "Sélectionner / Changer de questionnaire",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(22.dp)
+                        )
                     }
                 }
-
-
 
                 if (!questionnaire?.description.isNullOrBlank()) {
                     Spacer(modifier = Modifier.height(6.dp))
@@ -435,6 +443,7 @@ fun SurveyFormScreen(
                 )
             }
         }
+
 
         // Form Submission Error Messages (Only displayed if an error occurs)
         item {
@@ -750,17 +759,35 @@ fun SurveyFormScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = TextAlign.Center
                             )
-                            OutlinedButton(
-                                onClick = { viewModel.pullFormsFromSupabase() },
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 modifier = Modifier.padding(top = 8.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.Refresh,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Actualiser / Synchroniser")
+                                Button(
+                                    onClick = { viewModel.ensureDefaultSurveyExists() },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary
+                                    )
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Save,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Questionnaire Local")
+                                }
+                                OutlinedButton(
+                                    onClick = { viewModel.pullFormsFromSupabase() }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Actualiser")
+                                }
                             }
                         }
                     }
@@ -846,7 +873,7 @@ fun SurveyFormScreen(
                                         )
                                         Spacer(modifier = Modifier.width(10.dp))
                                         Text(
-                                            text = if (isConnectedAndOnline) "Enregistrement & Synchronisation..." else "Enregistrement dans SQLite...",
+                                            text = if (isConnectedAndOnline) "Enregistrement & Synchronisation..." else "Enregistrement en cours...",
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 15.sp,
                                             color = Color.White
@@ -907,6 +934,35 @@ fun SurveyFormScreen(
                     }
 
 
+                    // Secondary Button: Tehirizo ho Brouillon
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.saveDraftLocally()
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .pressScaleEffect(0.96f)
+                            .height(48.dp)
+                            .testTag("save_draft_local_btn"),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.primary
+                        ),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Save,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Tehirizo ho Brouillon",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                    }
+
                     FilledTonalButton(
                         onClick = { viewModel.resetForm() },
                         modifier = Modifier
@@ -933,11 +989,11 @@ fun SurveyFormScreen(
         }
     }
 
-    // ModalBottomSheet hisafidianana ny questionnaire rehefa tsindrina ny "trois tirets" (☰)
+    // ModalBottomSheet hisafidianana ny questionnaire
     if (showQuestionnaireSheet) {
         ModalBottomSheet(
             onDismissRequest = { showQuestionnaireSheet = false },
-            sheetState = rememberModalBottomSheetState(),
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             containerColor = MaterialTheme.colorScheme.surface,
             shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
         ) {
@@ -947,116 +1003,64 @@ fun SurveyFormScreen(
                     .padding(horizontal = 20.dp, vertical = 8.dp)
                     .padding(bottom = 32.dp)
             ) {
+                // 1. Header row
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), CircleShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Menu,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text(
-                                text = "Questionnaires",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "${allQuestionnaires.size} formulaire(s) disponible(s)",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color(0xFF047857),
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                    }
+                    Text(
+                        text = "Sélectionner un questionnaire",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
 
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(
-                            onClick = { viewModel.pullFormsFromSupabase() },
-                            modifier = Modifier
-                                .size(36.dp)
-                                .pressScaleEffect(0.85f)
-                        ) {
-                            if (isCurrentlyLoading) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(18.dp),
-                                    strokeWidth = 2.dp,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            } else {
-                                Icon(
-                                    imageVector = Icons.Default.Refresh,
-                                    contentDescription = "Actualiser en direct",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-
-                        IconButton(
-                            onClick = { showQuestionnaireSheet = false },
-                            modifier = Modifier
-                                .size(36.dp)
-                                .pressScaleEffect(0.85f)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Fermer",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
+                    IconButton(
+                        onClick = { showQuestionnaireSheet = false },
+                        modifier = Modifier
+                            .size(36.dp)
+                            .pressScaleEffect(0.85f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Fermer",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
-
                 if (allQuestionnaires.isEmpty()) {
-                    Column(
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
+                            .padding(vertical = 36.dp),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Assignment,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                            modifier = Modifier.size(48.dp)
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            text = "Aucun questionnaire disponible",
+                            text = "Tsy misy questionnaire azo ampiasaina",
                             style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "Les questionnaires en statut « BROUILLON » ne sont pas affichés.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 } else {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        allQuestionnaires.forEachIndexed { index, qItem ->
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        allQuestionnaires.forEach { qItem ->
                             val isSelected = questionnaire?.idQuestionnaire == qItem.idQuestionnaire
-                            Column(
+
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
+                                border = BorderStroke(
+                                    width = if (isSelected) 1.5.dp else 1.dp,
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                                ),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
@@ -1064,59 +1068,24 @@ fun SurveyFormScreen(
                                         showQuestionnaireSheet = false
                                     }
                                     .pressScaleEffect(0.98f)
-                                    .padding(vertical = 12.dp, horizontal = 4.dp)
                                     .testTag("sheet_questionnaire_item_${qItem.idQuestionnaire}")
                             ) {
                                 Row(
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 14.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Filled.Assignment,
-                                        contentDescription = null,
-                                        tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(24.dp)
-                                    )
-
-                                    Spacer(modifier = Modifier.width(14.dp))
-
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
                                             text = qItem.titre,
-                                            style = MaterialTheme.typography.titleSmall,
-                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
                                             color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                                         )
 
-                                        Spacer(modifier = Modifier.height(3.dp))
-
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            if (qItem.version.isNotBlank()) {
-                                                Text(
-                                                    text = qItem.version,
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    color = Color(0xFF047857)
-                                                )
-                                            }
-
-                                            val isAnsweredByThisCode = validationState.answeredQuestionnaires.any { it.equals(qItem.titre, ignoreCase = true) }
-                                            if (codeUnique.isNotBlank() && isAnsweredByThisCode) {
-                                                Text(
-                                                    text = if (qItem.version.isNotBlank()) "• Déjà répondu" else "Déjà répondu",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = StatusError
-                                                )
-                                            }
-                                        }
-
-
                                         if (!qItem.description.isNullOrBlank()) {
-                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Spacer(modifier = Modifier.height(4.dp))
                                             Text(
                                                 text = qItem.description ?: "",
                                                 style = MaterialTheme.typography.bodySmall,
@@ -1126,24 +1095,16 @@ fun SurveyFormScreen(
                                         }
                                     }
 
-                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Spacer(modifier = Modifier.width(12.dp))
 
                                     if (isSelected) {
                                         Icon(
                                             imageVector = Icons.Default.CheckCircle,
-                                            contentDescription = "Sélectionné",
+                                            contentDescription = "Voasafidy",
                                             tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(22.dp)
+                                            modifier = Modifier.size(24.dp)
                                         )
                                     }
-                                }
-
-                                if (index < allQuestionnaires.lastIndex) {
-                                    Spacer(modifier = Modifier.height(12.dp))
-                                    HorizontalDivider(
-                                        thickness = 0.5.dp,
-                                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
-                                    )
                                 }
                             }
                         }

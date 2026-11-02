@@ -344,6 +344,171 @@ class UserSessionManager(context: Context) {
         }
     }
 
+    /**
+     * Mitahiry an-toerana ny valintenin'ny questionnaire eo am-pamenoana (Auto-save draft).
+     * Miantoka fa na miovaova aza ny connexion na tapaka tampoka, tsy very mihitsy ny nosoratan'ny mpanadihady.
+     */
+    fun saveFormDraft(
+        questionnaireId: Long,
+        codeUnique: String,
+        dateEnquete: String,
+        textResponses: Map<Long, String>,
+        selectedOptions: Map<Long, List<Long>>,
+        autreResponses: Map<Long, String>
+    ) {
+        try {
+            val root = org.json.JSONObject().apply {
+                put("questionnaire_id", questionnaireId)
+                put("code_unique", codeUnique)
+                put("date_enquete", dateEnquete)
+
+                val textObj = org.json.JSONObject()
+                for ((k, v) in textResponses) {
+                    textObj.put(k.toString(), v)
+                }
+                put("text_responses", textObj)
+
+                val optObj = org.json.JSONObject()
+                for ((k, v) in selectedOptions) {
+                    val arr = org.json.JSONArray()
+                    v.forEach { arr.put(it) }
+                    optObj.put(k.toString(), arr)
+                }
+                put("selected_options", optObj)
+
+                val autreObj = org.json.JSONObject()
+                for ((k, v) in autreResponses) {
+                    autreObj.put(k.toString(), v)
+                }
+                put("autre_responses", autreObj)
+                put("timestamp", System.currentTimeMillis())
+            }
+            prefs.edit().putString(KEY_FORM_DRAFT_PREFIX + questionnaireId, root.toString()).apply()
+        } catch (_: Exception) {}
+    }
+
+    fun getFormDraft(questionnaireId: Long): FormDraftData? {
+        val str = prefs.getString(KEY_FORM_DRAFT_PREFIX + questionnaireId, null) ?: return null
+        return try {
+            val root = org.json.JSONObject(str)
+            val code = root.optString("code_unique", "")
+            val date = root.optString("date_enquete", "")
+
+            val textMap = mutableMapOf<Long, String>()
+            val textObj = root.optJSONObject("text_responses")
+            if (textObj != null) {
+                val it = textObj.keys()
+                while (it.hasNext()) {
+                    val k = it.next()
+                    k.toLongOrNull()?.let { id -> textMap[id] = textObj.optString(k, "") }
+                }
+            }
+
+            val optMap = mutableMapOf<Long, List<Long>>()
+            val optObj = root.optJSONObject("selected_options")
+            if (optObj != null) {
+                val it = optObj.keys()
+                while (it.hasNext()) {
+                    val k = it.next()
+                    k.toLongOrNull()?.let { id ->
+                        val arr = optObj.optJSONArray(k)
+                        if (arr != null) {
+                            val list = mutableListOf<Long>()
+                            for (i in 0 until arr.length()) {
+                                list.add(arr.getLong(i))
+                            }
+                            optMap[id] = list
+                        }
+                    }
+                }
+            }
+
+            val autreMap = mutableMapOf<Long, String>()
+            val autreObj = root.optJSONObject("autre_responses")
+            if (autreObj != null) {
+                val it = autreObj.keys()
+                while (it.hasNext()) {
+                    val k = it.next()
+                    k.toLongOrNull()?.let { id -> autreMap[id] = autreObj.optString(k, "") }
+                }
+            }
+
+            FormDraftData(
+                questionnaireId = questionnaireId,
+                codeUnique = code,
+                dateEnquete = date,
+                textResponses = textMap,
+                selectedOptions = optMap,
+                autreResponses = autreMap
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun clearFormDraft(questionnaireId: Long) {
+        prefs.edit().remove(KEY_FORM_DRAFT_PREFIX + questionnaireId).apply()
+    }
+
+    /**
+     * Mitahiry ny safidy ny questionnaire (Selectionner questionnaire) ao amin'ny fitahirizana an-toerana (Local)
+     * mba tsy ho very na hovaina na dia tapaka ny connexion na akatona ny fampiharana.
+     */
+    fun saveSelectedQuestionnaireId(id: Long) {
+        prefs.edit().putLong(KEY_SELECTED_QUESTIONNAIRE_ID, id).apply()
+    }
+
+    fun getSelectedQuestionnaireId(): Long? {
+        if (!prefs.contains(KEY_SELECTED_QUESTIONNAIRE_ID)) return null
+        val id = prefs.getLong(KEY_SELECTED_QUESTIONNAIRE_ID, -1L)
+        return if (id > 0L) id else null
+    }
+
+    fun clearSelectedQuestionnaireId() {
+        prefs.edit().remove(KEY_SELECTED_QUESTIONNAIRE_ID).apply()
+    }
+
+    /**
+     * Mitahiry ireo annonces noforonina an-toerana nefa mbola miandry fandefasana any amin'ny Supabase
+     * rehefa miverina ny connexion.
+     */
+    fun addPendingAnnonceSync(idAnnonce: String) {
+        val current = getPendingAnnonceSyncIds().toMutableSet()
+        current.add(idAnnonce)
+        prefs.edit().putStringSet(KEY_PENDING_ANNONCE_SYNC, current).apply()
+    }
+
+    fun getPendingAnnonceSyncIds(): Set<String> {
+        return prefs.getStringSet(KEY_PENDING_ANNONCE_SYNC, emptySet()) ?: emptySet()
+    }
+
+    fun removePendingAnnonceSync(idAnnonce: String) {
+        val current = getPendingAnnonceSyncIds().toMutableSet()
+        current.remove(idAnnonce)
+        prefs.edit().putStringSet(KEY_PENDING_ANNONCE_SYNC, current).apply()
+    }
+
+    /**
+     * Mitahiry ireo fanamarihana "novakiana" (LU) natao tamin'ny offline
+     */
+    fun addPendingAnnonceRead(idAnnonce: String, userId: Long) {
+        val key = "${idAnnonce}_${userId}"
+        val current = getPendingAnnonceReads().toMutableSet()
+        current.add(key)
+        prefs.edit().putStringSet(KEY_PENDING_ANNONCE_READS, current).apply()
+    }
+
+    fun getPendingAnnonceReads(): Set<String> {
+        return prefs.getStringSet(KEY_PENDING_ANNONCE_READS, emptySet()) ?: emptySet()
+    }
+
+    fun removePendingAnnonceRead(idAnnonce: String, userId: Long) {
+        val key = "${idAnnonce}_${userId}"
+        val current = getPendingAnnonceReads().toMutableSet()
+        current.remove(key)
+        prefs.edit().putStringSet(KEY_PENDING_ANNONCE_READS, current).apply()
+    }
+
     companion object {
         private const val PREF_NAME = "enquete_user_session_pref"
         private const val KEY_IS_LOGGED_IN = "is_logged_in"
@@ -363,5 +528,18 @@ class UserSessionManager(context: Context) {
         private const val KEY_PENDING_DELETIONS = "pending_remote_deletions"
         private const val KEY_REMEMBER_ME = "remember_me_pref"
         private const val KEY_LAST_IDENTIFIER = "last_identifier_pref"
+        private const val KEY_FORM_DRAFT_PREFIX = "active_form_draft_q_"
+        private const val KEY_SELECTED_QUESTIONNAIRE_ID = "selected_questionnaire_id_pref"
+        private const val KEY_PENDING_ANNONCE_SYNC = "pending_annonce_sync_ids"
+        private const val KEY_PENDING_ANNONCE_READS = "pending_annonce_read_keys"
     }
 }
+
+data class FormDraftData(
+    val questionnaireId: Long,
+    val codeUnique: String,
+    val dateEnquete: String,
+    val textResponses: Map<Long, String>,
+    val selectedOptions: Map<Long, List<Long>>,
+    val autreResponses: Map<Long, String>
+)

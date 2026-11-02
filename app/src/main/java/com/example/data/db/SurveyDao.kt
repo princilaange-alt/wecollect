@@ -222,6 +222,9 @@ interface SurveyDao {
     @Query("SELECT * FROM questions ORDER BY ordre ASC")
     suspend fun getAllQuestionsWithOptionsDirect(): List<QuestionWithOptions>
 
+    @Query("SELECT * FROM questions ORDER BY ordre ASC")
+    fun getAllQuestionsFlow(): Flow<List<QuestionEntity>>
+
     @Query("SELECT * FROM questions WHERE id_question = :questionId LIMIT 1")
     suspend fun getQuestionById(questionId: Long): QuestionEntity?
 
@@ -472,12 +475,13 @@ interface SurveyDao {
     @Query("DELETE FROM enquetes WHERE sync_status = 'SYNCHRONISEE' AND id_enquete NOT IN (:remoteIds)")
     suspend fun deleteSyncedEnquetesNotIn(remoteIds: List<Long>)
 
+    /**
+     * Tsy fafana velively hoazy amin'ny SQLite ny fiches efa voatahiry eo an-toerana (Local permanence).
+     * Ny fampiharana dia mitahiry mandrakizay ny tahirin-kevitra eo an-toerana na misy na tsy misy connexion.
+     */
     @Transaction
     suspend fun reconcileRemoteDeletedEnquetes(remoteIds: List<Long>) {
-        if (remoteIds.isNotEmpty()) {
-            deleteSyncedReponsesNotIn(remoteIds)
-            deleteSyncedEnquetesNotIn(remoteIds)
-        }
+        // Tsy fafana automatique ny fiches locales voatahiry mba tsy hisy fahaverezana tahiry na miovaova aza ny tambajotra.
     }
 
     @Query("SELECT * FROM enquetes WHERE sync_status = 'EN_ATTENTE' ORDER BY id_enquete DESC")

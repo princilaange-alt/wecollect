@@ -44,6 +44,7 @@ class SurveyRepository(private val surveyDao: SurveyDao, private val context: Co
     val allEnquetesAudit: Flow<List<SyncedAuditRecord>> = surveyDao.getAllEnquetesAudit()
 
     val allQuestionnaires: Flow<List<QuestionnaireEntity>> = surveyDao.getAllQuestionnaires()
+    val allQuestions: Flow<List<QuestionEntity>> = surveyDao.getAllQuestionsFlow()
 
     val defaultQuestionnaire: Flow<QuestionnaireEntity?> = surveyDao.getDefaultQuestionnaire()
 
@@ -838,6 +839,13 @@ class SurveyRepository(private val surveyDao: SurveyDao, private val context: Co
     }
 
     suspend fun deleteQuestionnaireCompletely(id: Long) {
+        if (id == 12L) {
+            // Arovana tsy ho voafafa velively ny questionnaire fototra
+            try {
+                surveyDao.markQuestionnaireAsPublished(12L)
+            } catch (_: Exception) {}
+            return
+        }
         try {
             val enquetes = surveyDao.getEnquetesByQuestionnaireId(id)
             if (enquetes.isNotEmpty()) {
@@ -890,16 +898,12 @@ class SurveyRepository(private val surveyDao: SurveyDao, private val context: Co
             com.example.data.sync.SyncService.isDraftStatus(it.statut) || !com.example.data.sync.SyncService.isPublicStatus(it.statut)
         }
 
-        // Marquer les autres questionnaires comme BROUILLON lors d'une synchronisation globale complète (isFullSync)
-        // Seuls les questionnaires avec statut PUBLIÉ issus de Supabase restent actifs
-        if (isFullSync) {
+        // Seuls les questionnaires confirmés issus de Supabase sont mis à jour
+        // Raha miovaova ny connexion na tsy nisy formulaire vaovao voaray dia arovana ny questionnaires efa voatahiry ao amin'ny SQLite
+        if (isFullSync && nonDraftQuestionnaires.isNotEmpty()) {
             val publicIds = nonDraftQuestionnaires.map { it.idQuestionnaire }.distinct()
             try {
-                if (publicIds.isNotEmpty()) {
-                    surveyDao.markOtherQuestionnairesAsDraft(publicIds)
-                } else {
-                    surveyDao.markAllQuestionnairesAsDraft()
-                }
+                surveyDao.markOtherQuestionnairesAsDraft(publicIds)
             } catch (_: Exception) {}
         }
 
@@ -952,33 +956,40 @@ class SurveyRepository(private val surveyDao: SurveyDao, private val context: Co
         }
     }
 
+    /**
+     * Mitahiry an-toerana (SQLite Room) ireo annonces avy amin'ny Supabase.
+     * Tsy fafana velively ny annonces rehefa tapaka na miovaova ny connexion,
+     * ary arovana ny annonces sy ny sata novakiana (LU) efa voatahiry ao amin'ny finday.
+     */
     suspend fun savePulledAnnonces(
         annonces: List<AnnonceEntity>,
         fichiers: List<AnnonceFichierEntity> = emptyList(),
         destinataires: List<AnnonceDestinataireEntity> = emptyList()
     ) {
         try {
-            // Fafana avy hatrany ireo annonces par defaut na seed data taloha
-            surveyDao.deleteDefaultAnnonceFichiers()
-            surveyDao.deleteDefaultAnnonceDestinataires()
-            surveyDao.deleteDefaultAnnonces()
-
             if (annonces.isNotEmpty()) {
-                val validIds = annonces.map { it.idAnnonce }
-                surveyDao.deleteAnnonceFichiersNotIn(validIds)
-                surveyDao.deleteAnnonceDestinatairesNotIn(validIds)
-                surveyDao.deleteAnnoncesNotIn(validIds)
+                // Ampidirina / Havaozina ao amin'ny SQLite ny annonces rehetra voaray
                 surveyDao.insertAnnonces(annonces)
-            } else {
-                surveyDao.deleteAllAnnonceFichiers()
-                surveyDao.deleteAllAnnonceDestinataires()
-                surveyDao.deleteAllAnnonces()
             }
             if (fichiers.isNotEmpty()) {
                 surveyDao.insertAnnonceFichiers(fichiers)
             }
             if (destinataires.isNotEmpty()) {
-                surveyDao.insertAnnonceDestinataires(destinataires)
+                // Arovan-tsaina ny sata "LU" efa voatahiry an-toerana mba tsy hivadika ho unread
+                val mergedDestinataires = destinataires.map { d ->
+                    val local = surveyDao.getDestinataire(d.idAnnonce, d.idUser)
+                    if (local?.statutLecture == "LU" && d.statutLecture != "LU") {
+                        d.copy(statutLecture = "LU", dateLecture = local.dateLecture)
+                    } else {
+                        d
+                    }
+                }
+                surveyDao.insertAnnonceDestinataires(mergedDestinataires)
+            }
+
+            // Raha mbola foana ny lisitra ao amin'ny finday dia ampidirina ny annonces fototra
+            if (surveyDao.countAnnonces() == 0) {
+                seedDefaultAnnonces()
             }
         } catch (_: Exception) {}
     }
@@ -1310,8 +1321,39 @@ class SurveyRepository(private val surveyDao: SurveyDao, private val context: Co
     }
 
     suspend fun ensureDefaultSurveyExists() {
-        if (surveyDao.countQuestionnaires() == 0) {
-            seedDefaultQuestionnaireAndQuestions()
+        ensurePublishedQuestionnaireExists()
+    }
+
+    /**
+     * Miantoka fa misy questionnaire azo ampiasaina foana ao amin'ny finday (SQLite)
+     * na dia tapaka na miovaova aza ny connexion.
+     */
+    suspend fun ensurePublishedQuestionnaireExists() {
+        try {
+            val list = surveyDao.getAllQuestionnairesList()
+            val active = list.filter { !com.example.data.sync.SyncService.isDraftStatus(it.statut) }
+            if (active.isEmpty()) {
+                val q12 = surveyDao.getQuestionnaireById(12L)
+                if (q12 != null) {
+                    surveyDao.markQuestionnaireAsPublished(12L)
+                    if (surveyDao.countQuestionsByQuestionnaire(12L) == 0) {
+                        seedDefaultQuestionnaireAndQuestions()
+                    }
+                } else if (list.isNotEmpty()) {
+                    surveyDao.markQuestionnaireAsPublished(list.first().idQuestionnaire)
+                } else {
+                    seedDefaultQuestionnaireAndQuestions()
+                }
+            } else {
+                val firstActive = active.first()
+                if (surveyDao.countQuestionsByQuestionnaire(firstActive.idQuestionnaire) == 0) {
+                    seedDefaultQuestionnaireAndQuestions()
+                }
+            }
+        } catch (_: Exception) {
+            try {
+                seedDefaultQuestionnaireAndQuestions()
+            } catch (_: Exception) {}
         }
     }
 
