@@ -201,6 +201,18 @@ object LocalSurveyValidator {
                         } else true
                     } else false
                 }
+                com.example.data.util.GpsLocationHelper.isGpsQuestion(q.type, q.libelle) -> {
+                    val txt = textResponses[q.idQuestion]?.trim()
+                    val coords = com.example.data.util.GpsLocationHelper.parseCoordinates(txt)
+                    if (coords != null) {
+                        true
+                    } else {
+                        if (isMandatory) {
+                            errors.add("La position GPS pour « ${q.libelle} » est obligatoire.")
+                        }
+                        false
+                    }
+                }
                 else -> {
                     val txt = textResponses[q.idQuestion]?.trim()
                     !txt.isNullOrBlank()

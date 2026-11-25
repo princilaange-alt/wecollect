@@ -92,6 +92,7 @@ import com.example.data.model.OptionEntity
 import com.example.data.model.QuestionEntity
 import com.example.data.model.QuestionWithOptions
 import com.example.data.model.QuestionnaireEntity
+import com.example.data.util.GpsLocationHelper
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusPending
 import com.example.ui.theme.StatusSuccess
@@ -132,9 +133,13 @@ fun SurveyFormInputLayout(
             (if (dateEnquete.isNotBlank()) 1 else 0) +
             questions.count { qItem ->
                 val qId = qItem.question.idQuestion
-                when (qItem.question.type.trim().uppercase()) {
-                    "CHOIX_UNIQUE" -> (selectedOptions[qId]?.isNotEmpty() == true) || !textResponses[qId].isNullOrBlank()
-                    "CHOIX_MULTIPLE" -> selectedOptions[qId]?.isNotEmpty() == true
+                val qType = qItem.question.type.trim().uppercase()
+                val qLabel = qItem.question.libelle.trim().lowercase()
+                val isGps = GpsLocationHelper.isGpsQuestion(qType, qLabel)
+                when {
+                    isGps -> GpsLocationHelper.parseCoordinates(textResponses[qId]) != null
+                    qType == "CHOIX_UNIQUE" -> (selectedOptions[qId]?.isNotEmpty() == true) || !textResponses[qId].isNullOrBlank()
+                    qType == "CHOIX_MULTIPLE" -> selectedOptions[qId]?.isNotEmpty() == true
                     else -> !textResponses[qId].isNullOrBlank()
                 }
             }
@@ -481,9 +486,12 @@ fun SurveyQuestionInputField(
     val qType = q.type.trim().uppercase()
     val qLabel = q.libelle.trim().lowercase()
 
-    val isAnswered = when (qType) {
-        "CHOIX_UNIQUE" -> selectedOptions.isNotEmpty() || textValue.isNotBlank()
-        "CHOIX_MULTIPLE" -> selectedOptions.isNotEmpty()
+    val isGpsType = GpsLocationHelper.isGpsQuestion(qType, qLabel)
+
+    val isAnswered = when {
+        isGpsType -> GpsLocationHelper.parseCoordinates(textValue) != null
+        qType == "CHOIX_UNIQUE" -> selectedOptions.isNotEmpty() || textValue.isNotBlank()
+        qType == "CHOIX_MULTIPLE" -> selectedOptions.isNotEmpty()
         else -> textValue.isNotBlank()
     }
 
@@ -499,13 +507,13 @@ fun SurveyQuestionInputField(
             qLabel.contains("email") || qLabel.contains("courriel") || qLabel.contains("e-mail")
             )
 
-    val isImageType = qType in listOf("IMAGE", "PHOTO", "PICTURE", "CAMERA") ||
+    val isImageType = !isGpsType && (qType in listOf("IMAGE", "PHOTO", "PICTURE", "CAMERA") ||
             qType.contains("IMAGE") || qType.contains("PHOTO") ||
-            (qType == "TEXTE" && (qLabel.contains("photo") || qLabel.contains("sary") || qLabel.contains("image")))
+            (qType == "TEXTE" && (qLabel.contains("photo") || qLabel.contains("sary") || qLabel.contains("image"))))
 
-    val isAudioType = qType in listOf("AUDIO", "VOCAL", "SON", "VOICE", "ENREGISTREMENT", "MICRO") ||
+    val isAudioType = !isGpsType && (qType in listOf("AUDIO", "VOCAL", "SON", "VOICE", "ENREGISTREMENT", "MICRO") ||
             qType.contains("AUDIO") || qType.contains("VOCAL") || qType.contains("SON") ||
-            (qType == "TEXTE" && (qLabel.contains("audio") || qLabel.contains("vocal") || qLabel.contains("enregistrement") || qLabel.contains("feo")))
+            (qType == "TEXTE" && (qLabel.contains("audio") || qLabel.contains("vocal") || qLabel.contains("enregistrement") || qLabel.contains("feo"))))
 
     val isRatingType = (qType == "NOMBRE" || qType == "NOTE" || qType == "RATING") && (
             qLabel.contains("note") || qLabel.contains("satisfaction") || qLabel.contains("rating") || qLabel.contains("etoile") || qLabel.contains("étoile")
@@ -555,6 +563,15 @@ fun SurveyQuestionInputField(
 
         // Corps du champ selon son type
         when {
+            isGpsType -> {
+                SurveyGpsInput(
+                    questionId = q.idQuestion,
+                    value = textValue,
+                    isMandatory = q.obligatoire,
+                    onCoordinatesChanged = onTextChanged
+                )
+            }
+
             isImageType -> {
                 SurveyImageInput(
                     questionId = q.idQuestion,

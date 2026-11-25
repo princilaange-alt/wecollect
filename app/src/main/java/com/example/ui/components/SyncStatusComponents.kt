@@ -219,7 +219,7 @@ fun SyncStatusAccentStrip(
 }
 
 /**
- * Bannière explicative récapitulative des états de synchronisation
+ * Bannière KPI interactive des états de synchronisation pour filtrer la liste
  */
 @Composable
 fun SyncStatusLegendRow(
@@ -233,7 +233,7 @@ fun SyncStatusLegendRow(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp)
+            .padding(vertical = 2.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -241,23 +241,40 @@ fun SyncStatusLegendRow(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "États de Synchronisation",
+                text = "Suivi de synchronisation",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
+                color = MaterialTheme.colorScheme.onBackground
             )
-            Text(
-                text = "Filtrer la liste",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+
+            if (selectedFilter != "TOUS") {
+                Surface(
+                    onClick = { onFilterSelected("TOUS") },
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
+                ) {
+                    Text(
+                        text = "Tout afficher",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
+            } else {
+                Text(
+                    text = "Appuyez pour filtrer",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(8.dp))
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             // En attente
             SyncLegendChip(
@@ -303,44 +320,84 @@ fun SyncLegendChip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val containerColor = if (isSelected) state.accentColor.copy(alpha = 0.12f) else Color.Transparent
+    val containerColor = if (isSelected) {
+        state.accentColor.copy(alpha = 0.12f)
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+    val borderColor = if (isSelected) {
+        state.accentColor
+    } else {
+        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+    }
+    val shortLabel = when (state) {
+        SyncVisualState.PENDING -> "En attente"
+        SyncVisualState.SYNCED -> "Synchronisées"
+        SyncVisualState.ERROR -> "Erreurs"
+    }
 
     Surface(
-        shape = RoundedCornerShape(10.dp),
+        onClick = onClick,
+        shape = RoundedCornerShape(16.dp),
         color = containerColor,
+        tonalElevation = if (isSelected) 2.dp else 1.dp,
+        shadowElevation = if (isSelected) 2.dp else 0.5.dp,
+        border = BorderStroke(if (isSelected) 1.5.dp else 1.dp, borderColor),
         modifier = modifier
-            .pressScaleEffect(0.92f)
-            .clip(RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick)
+            .pressScaleEffect(0.95f)
             .testTag("legend_chip_${state.code.lowercase()}")
     ) {
         Column(
-            modifier = Modifier.padding(vertical = 6.dp, horizontal = 4.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = state.primaryIcon,
-                    contentDescription = null,
-                    tint = state.accentColor,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(4.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(state.accentColor.copy(alpha = 0.14f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = state.primaryIcon,
+                        contentDescription = null,
+                        tint = state.accentColor,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+
+                if (isSelected) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(state.accentColor)
+                    )
+                }
+            }
+
+            Column {
                 Text(
                     text = "$count",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp,
-                    color = state.accentColor
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 20.sp,
+                    lineHeight = 22.sp,
+                    color = if (isSelected) state.accentColor else MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = shortLabel,
+                    fontSize = 11.sp,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                    color = if (isSelected) state.accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                 )
             }
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = state.title,
-                fontSize = 11.5.sp,
-                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                color = if (isSelected) state.accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1
-            )
         }
     }
 }

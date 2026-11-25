@@ -137,6 +137,8 @@ import com.example.ui.components.FacebookShimmerCrossfade
 import com.example.ui.components.FacebookFormSkeleton
 import com.example.ui.components.SurveyAudioInput
 import com.example.ui.components.SurveyImageInput
+import com.example.ui.components.SurveyGpsInput
+import com.example.data.util.GpsLocationHelper
 import com.example.ui.components.TopSyncTransferAnimation
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusPending
@@ -179,15 +181,6 @@ fun SurveyFormScreen(
             showQuestionnaireSheet = false
         } else if (duplicateDetectionDialog != null) {
             viewModel.dismissDuplicateDialog()
-        }
-    }
-
-    LaunchedEffect(questions.isEmpty()) {
-        if (questions.isEmpty()) {
-            delay(300)
-            if (questions.isEmpty()) {
-                viewModel.ensureDefaultSurveyExists()
-            }
         }
     }
 
@@ -380,70 +373,73 @@ fun SurveyFormScreen(
             }
         }
 
-        // 1. Questionnaire Header (Centered Pro layout)
-        item {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 8.dp, bottom = 4.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Box(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = questionnaire?.titre ?: if (isPullingForm) "Chargement..." else "Aucun questionnaire disponible",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 42.dp)
-                            .clickable { showQuestionnaireSheet = true }
-                            .testTag("txt_questionnaire_titre_header")
-                    )
+        val hasActiveForm = questionnaire != null && questions.isNotEmpty()
 
-                    IconButton(
-                        onClick = { showQuestionnaireSheet = true },
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .size(38.dp)
-                            .pressScaleEffect(0.85f)
-                            .testTag("btn_titre_questionnaire_three_lines")
+        if (hasActiveForm) {
+            // 1. Questionnaire Header (Centered Pro layout)
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp, bottom = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Menu,
-                            contentDescription = "Sélectionner / Changer de questionnaire",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(22.dp)
+                        Text(
+                            text = questionnaire?.titre ?: "",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 42.dp)
+                                .clickable { showQuestionnaireSheet = true }
+                                .testTag("txt_questionnaire_titre_header")
+                        )
+
+                        IconButton(
+                            onClick = { showQuestionnaireSheet = true },
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .size(38.dp)
+                                .pressScaleEffect(0.85f)
+                                .testTag("btn_titre_questionnaire_three_lines")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Menu,
+                                contentDescription = "Sélectionner / Changer de questionnaire",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+
+                    if (!questionnaire?.description.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = questionnaire?.description ?: "",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            lineHeight = 20.sp,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp)
                         )
                     }
-                }
 
-                if (!questionnaire?.description.isNullOrBlank()) {
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = questionnaire?.description ?: "",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                        lineHeight = 20.sp,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    HorizontalDivider(
+                        thickness = 0.5.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
                     )
                 }
-
-                Spacer(modifier = Modifier.height(12.dp))
-                HorizontalDivider(
-                    thickness = 0.5.dp,
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
-                )
             }
         }
-
 
         // Form Submission Error Messages (Only displayed if an error occurs)
         item {
@@ -484,6 +480,7 @@ fun SurveyFormScreen(
             }
         }
 
+        if (hasActiveForm) {
         // 3. Identification de l'Enquête & du Répondant (Clean, without background card/border)
         item {
             Column(
@@ -715,19 +712,24 @@ fun SurveyFormScreen(
                 }
             )
         }
-
-        // Supabase sync / loading indicator if no questions are loaded yet
-        if (questions.isEmpty()) {
+        } else {
+            // Empty state when no published questionnaire / no questions exist in the database
             item {
-                Box(
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 24.dp, vertical = 36.dp),
-                    contentAlignment = Alignment.Center
+                        .padding(vertical = 24.dp)
+                        .testTag("empty_questionnaire_state")
                 ) {
                     Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 24.dp, vertical = 32.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         if (isPullingForm) {
                             CircularProgressIndicator(
@@ -736,49 +738,54 @@ fun SurveyFormScreen(
                                 strokeWidth = 3.dp
                             )
                             Text(
-                                text = "Fampidinana ny questionnaires avy amin'ny Supabase...",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        } else {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.Assignment,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
-                                modifier = Modifier.size(48.dp)
-                            )
-                            Text(
-                                text = "Aucun questionnaire disponible",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "Izay questionnaire navoaka (PUBLIÉ) ao amin'ny Supabase ihany no hiseho eto.",
+                                text = "Chargement des questionnaires depuis la base de données...",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = TextAlign.Center
                             )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .size(64.dp)
+                                    .background(
+                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+                                        shape = CircleShape
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Assignment,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(32.dp)
+                                )
+                            }
+                            Text(
+                                text = if (questionnaire == null) "Aucun questionnaire disponible" else "Aucune question disponible",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                textAlign = TextAlign.Center
+                            )
+                            Text(
+                                text = if (questionnaire == null) {
+                                    "Aucun formulaire n'est affiché car aucun questionnaire publié n'est présent dans la base de données."
+                                } else {
+                                    "Le questionnaire « ${questionnaire?.titre ?: ""} » ne contient aucune question dans la base de données."
+                                },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
                             Row(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                modifier = Modifier.padding(top = 8.dp)
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Button(
-                                    onClick = { viewModel.ensureDefaultSurveyExists() },
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = MaterialTheme.colorScheme.primary
-                                    )
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Save,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Questionnaire Local")
-                                }
-                                OutlinedButton(
-                                    onClick = { viewModel.pullFormsFromSupabase() }
+                                    onClick = { viewModel.pullFormsFromSupabase() },
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.testTag("refresh_questionnaires_btn")
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Refresh,
@@ -788,6 +795,14 @@ fun SurveyFormScreen(
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text("Actualiser")
                                 }
+                                if (allQuestionnaires.isNotEmpty() && (questionnaire == null || allQuestionnaires.size > 1)) {
+                                    OutlinedButton(
+                                        onClick = { showQuestionnaireSheet = true },
+                                        shape = RoundedCornerShape(12.dp)
+                                    ) {
+                                        Text("Choisir")
+                                    }
+                                }
                             }
                         }
                     }
@@ -795,10 +810,8 @@ fun SurveyFormScreen(
             }
         }
 
-
-
         // Action Buttons: Save to SQLite (retained in fiches) & Auto-Sync to Supabase
-        if (questions.isNotEmpty()) {
+        if (hasActiveForm) {
             item {
                 Spacer(modifier = Modifier.height(10.dp))
                 Column(
@@ -1301,9 +1314,10 @@ fun QuestionCard(
     }
     val hasAutreSelected = selectedAutreOpt != null
 
-    val isAnswered = when (q.type) {
-        "CHOIX_UNIQUE" -> (selectedOptions.isNotEmpty() || textValue.isNotBlank()) && (!hasAutreSelected || autreValue.isNotBlank())
-        "CHOIX_MULTIPLE" -> selectedOptions.isNotEmpty() && (!hasAutreSelected || autreValue.isNotBlank())
+    val isAnswered = when {
+        GpsLocationHelper.isGpsQuestion(q.type, q.libelle) -> GpsLocationHelper.parseCoordinates(textValue) != null
+        q.type == "CHOIX_UNIQUE" -> (selectedOptions.isNotEmpty() || textValue.isNotBlank()) && (!hasAutreSelected || autreValue.isNotBlank())
+        q.type == "CHOIX_MULTIPLE" -> selectedOptions.isNotEmpty() && (!hasAutreSelected || autreValue.isNotBlank())
         else -> textValue.isNotBlank()
     }
 
@@ -1373,15 +1387,29 @@ fun QuestionCard(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            val isImageType = qTypeNormalized in listOf("IMAGE", "PHOTO", "PICTURE", "CAMERA") ||
-                    qTypeNormalized.contains("IMAGE") || qTypeNormalized.contains("PHOTO") ||
-                    (qTypeNormalized == "TEXTE" && (qLabelNormalized.contains("photo") || qLabelNormalized.contains("sary") || qLabelNormalized.contains("image")))
+            val isGpsType = GpsLocationHelper.isGpsQuestion(qTypeNormalized, qLabelNormalized)
 
-            val isAudioType = qTypeNormalized in listOf("AUDIO", "VOCAL", "SON", "VOICE", "ENREGISTREMENT", "MICRO") ||
+            val isImageType = !isGpsType && (qTypeNormalized in listOf("IMAGE", "PHOTO", "PICTURE", "CAMERA") ||
+                    qTypeNormalized.contains("IMAGE") || qTypeNormalized.contains("PHOTO") ||
+                    (qTypeNormalized == "TEXTE" && (qLabelNormalized.contains("photo") || qLabelNormalized.contains("sary") || qLabelNormalized.contains("image"))))
+
+            val isAudioType = !isGpsType && (qTypeNormalized in listOf("AUDIO", "VOCAL", "SON", "VOICE", "ENREGISTREMENT", "MICRO") ||
                     qTypeNormalized.contains("AUDIO") || qTypeNormalized.contains("VOCAL") || qTypeNormalized.contains("SON") ||
-                    (qTypeNormalized == "TEXTE" && (qLabelNormalized.contains("audio") || qLabelNormalized.contains("vocal") || qLabelNormalized.contains("enregistrement") || qLabelNormalized.contains("feo") || qLabelNormalized.contains("peo")))
+                    (qTypeNormalized == "TEXTE" && (qLabelNormalized.contains("audio") || qLabelNormalized.contains("vocal") || qLabelNormalized.contains("enregistrement") || qLabelNormalized.contains("feo") || qLabelNormalized.contains("peo"))))
 
             when {
+                isGpsType -> {
+                    SurveyGpsInput(
+                        questionId = q.idQuestion,
+                        value = textValue,
+                        isMandatory = q.obligatoire,
+                        onCoordinatesChanged = onTextChanged
+                    )
+                    if (fieldError != null) {
+                        VisualErrorMessage(message = fieldError)
+                    }
+                }
+
                 isImageType -> {
                     SurveyImageInput(
                         questionId = q.idQuestion,

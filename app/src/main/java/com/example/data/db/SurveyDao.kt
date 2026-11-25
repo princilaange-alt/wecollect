@@ -201,6 +201,21 @@ interface SurveyDao {
     @Query("DELETE FROM options WHERE id_question NOT IN (SELECT id_question FROM questions)")
     suspend fun deleteOrphanOptions()
 
+    @Query("""
+        DELETE FROM questions 
+        WHERE id_questionnaire = :questionnaireId 
+          AND id_question NOT IN (:keepIds) 
+          AND id_question NOT IN (SELECT DISTINCT id_question FROM reponses)
+    """)
+    suspend fun deleteRemovedQuestionsForQuestionnaire(questionnaireId: Long, keepIds: List<Long>)
+
+    @Query("""
+        DELETE FROM questions 
+        WHERE id_questionnaire = :questionnaireId 
+          AND id_question NOT IN (SELECT DISTINCT id_question FROM reponses)
+    """)
+    suspend fun deleteAllUnusedQuestionsForQuestionnaire(questionnaireId: Long)
+
     @Query("SELECT * FROM questions")
     suspend fun getAllQuestionsList(): List<QuestionEntity>
 
@@ -463,6 +478,9 @@ interface SurveyDao {
     @Query("UPDATE enquetes SET sync_status = :syncStatus, updated_at = :updatedAt WHERE id_enquete = :id")
     suspend fun updateSyncStatus(id: Long, syncStatus: String, updatedAt: String)
 
+    @Query("UPDATE enquetes SET id_personne = :newPersonneId WHERE id_enquete = :id")
+    suspend fun updateEnquetePersonneId(id: Long, newPersonneId: Long)
+
     @Delete
     suspend fun deleteEnquete(enquete: EnqueteEntity)
 
@@ -487,7 +505,10 @@ interface SurveyDao {
     @Query("SELECT * FROM enquetes WHERE sync_status = 'EN_ATTENTE' ORDER BY id_enquete DESC")
     fun getPendingSurveysFlow(): Flow<List<EnqueteEntity>>
 
-    @Query("SELECT COUNT(*) FROM enquetes WHERE sync_status = 'EN_ATTENTE'")
+    @Query("SELECT * FROM enquetes WHERE sync_status = 'EN_ATTENTE' OR sync_status = 'ERREUR'")
+    suspend fun getPendingOrErrorSurveysList(): List<EnqueteEntity>
+
+    @Query("SELECT COUNT(*) FROM enquetes WHERE sync_status = 'EN_ATTENTE' OR sync_status = 'ERREUR'")
     suspend fun countPendingSurveys(): Int
 
     // --- Reponses ---

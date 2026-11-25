@@ -648,6 +648,11 @@ class SupabaseRealtimeManager(
             "DELETE" -> {
                 val id = oldRecord?.optLong("id_enquete") ?: record?.optLong("id_enquete") ?: 0L
                 if (id > 0L) {
+                    val existing = repository.getEnqueteById(id)
+                    if (existing != null && (existing.syncStatus == "EN_ATTENTE" || existing.syncStatus == "ERREUR")) {
+                        // AROVANA: Tsy fafana velively ny fiches mbola miandry na misy erreur eo an-toerana
+                        return
+                    }
                     repository.deleteEnquete(id)
                     _eventNotification.value = "Fiche #$id supprimée de Supabase"
                 }
@@ -657,10 +662,10 @@ class SupabaseRealtimeManager(
                 val id = obj.optLong("id_enquete", 0L)
                 if (id <= 0L) return
 
-                // Fiarovana ny angona eo an-toerana : raha misy enquête EN_ATTENTE eo an-toerana
+                // Fiarovana ny angona eo an-toerana : raha misy enquête EN_ATTENTE na ERREUR eo an-toerana
                 // dia tsy potehina na soloina sao very ny fanovana mbola tsy tafakatra
                 val existing = repository.getEnqueteById(id)
-                if (existing != null && existing.syncStatus == "EN_ATTENTE") {
+                if (existing != null && (existing.syncStatus == "EN_ATTENTE" || existing.syncStatus == "ERREUR")) {
                     return
                 }
 

@@ -950,8 +950,10 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
             if (table == "users" || table == "utilisateurs") {
                 refreshSavedAccounts()
                 viewModelScope.launch { refreshLoggedInUserInternal() }
-            } else if (table == "questionnaires" || table == "formulaires" || table == "questions" || table == "options") {
+            } else if (table == "questionnaires" || table == "formulaires") {
                 viewModelScope.launch { syncService.quickCheckQuestionnairesRealtime() }
+            } else if (table == "questions" || table == "options") {
+                pullFormsFromSupabase()
             }
         }
 
@@ -1063,9 +1065,7 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
                         sessionManager.saveSelectedQuestionnaireId(idToSelect)
                         restoreActiveDraftIfAny(idToSelect)
                     } else {
-                        viewModelScope.launch {
-                            repository.ensurePublishedQuestionnaireExists()
-                        }
+                        _selectedQuestionnaireId.value = null
                     }
                 }
             }
@@ -1182,14 +1182,18 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             try {
                 repository.seedInitialDataIfEmpty()
-                repository.ensurePublishedQuestionnaireExists()
+                repository.cleanDraftQuestionnaires()
                 refreshLoggedInUserInternal()
                 _codeUnique.value = generateUniqueCode()
                 checkCodeDuplicateDebounced(_codeUnique.value)
-                val currentQId = _selectedQuestionnaireId.value ?: repository.getAllQuestionnairesList().firstOrNull()?.idQuestionnaire
+                val activeQuestionnaires = repository.getAllQuestionnairesList().filter { !SyncService.isDraftStatus(it.statut) }
+                val currentQId = _selectedQuestionnaireId.value?.takeIf { id -> activeQuestionnaires.any { it.idQuestionnaire == id } }
+                    ?: activeQuestionnaires.firstOrNull()?.idQuestionnaire
                 if (currentQId != null) {
                     _selectedQuestionnaireId.value = currentQId
                     restoreActiveDraftIfAny(currentQId)
+                } else {
+                    _selectedQuestionnaireId.value = null
                 }
                 if (!_isForceOffline.value && isConnectedAndOnline.value) {
                     pullFormsFromSupabase()
@@ -1347,13 +1351,7 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
                         restoreActiveDraftIfAny(updatedList.first().idQuestionnaire)
                     }
                 } else {
-                    repository.ensurePublishedQuestionnaireExists()
-                    val recovered = repository.getAllQuestionnairesList().filter { !SyncService.isDraftStatus(it.statut) }
-                    if (recovered.isNotEmpty()) {
-                        val recId = recovered.first().idQuestionnaire
-                        _selectedQuestionnaireId.value = recId
-                        restoreActiveDraftIfAny(recId)
-                    }
+                    _selectedQuestionnaireId.value = null
                 }
             } catch (e: Throwable) {
                 _isPullingForm.value = false
@@ -1927,8 +1925,12 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
             }
             val hasAutreError = selectedAutreOption != null && autreText.isBlank()
 
+            val isGps = com.example.data.util.GpsLocationHelper.isGpsQuestion(q.type, q.libelle)
+            val gpsCoords = if (isGps) com.example.data.util.GpsLocationHelper.parseCoordinates(rawText) else null
+
             val isAnswered = when {
                 q.estCodeUnique -> currentCode.isNotBlank() || rawText.isNotBlank()
+                isGps -> gpsCoords != null
                 q.type == "CHOIX_UNIQUE" -> (selectedOpts.isNotEmpty() || rawText.isNotBlank()) && !hasAutreError
                 q.type == "CHOIX_MULTIPLE" -> selectedOpts.isNotEmpty() && !hasAutreError
                 else -> rawText.isNotBlank()
@@ -1938,6 +1940,9 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
                 fieldErrors[q.idQuestion] = "Veuillez préciser votre réponse pour l'option « ${selectedAutreOption?.libelle ?: "Autre"} »"
             } else if (isMandatory && isAnswered) {
                 answeredCount++
+            } else if (isMandatory && isGps && gpsCoords == null) {
+                // Pour une question GPS obligatoire sans position valide
+                fieldErrors[q.idQuestion] = "Position GPS obligatoire requise (Appuyez sur « Obtenir ma position »)"
             }
 
             // Real-time format validation rules when filled
@@ -1968,6 +1973,12 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
                 else if (qType == "DATE") {
                     if (!rawText.matches(Regex("^\\d{4}-\\d{2}-\\d{2}$"))) {
                         fieldErrors[q.idQuestion] = "Format de date attendu : AAAA-MM-JJ"
+                    }
+                }
+                // Rule 5: GPS JSON format validation
+                else if (isGps) {
+                    if (gpsCoords == null) {
+                        fieldErrors[q.idQuestion] = "Coordonnées GPS invalides. Veuillez récupérer à nouveau votre position."
                     }
                 }
             }
@@ -2082,6 +2093,19 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
         if (submittedCode.isBlank()) {
             _formMessage.value = Pair("Le code unique est obligatoire.", true)
             return
+        }
+
+        // Contrôle strict des questions GPS obligatoires
+        for (qItem in qList) {
+            val isMandatory = qItem.question.obligatoire
+            if (isMandatory && com.example.data.util.GpsLocationHelper.isGpsQuestion(qItem.question.type, qItem.question.libelle)) {
+                val raw = _textResponses.value[qItem.question.idQuestion]
+                val coords = com.example.data.util.GpsLocationHelper.parseCoordinates(raw)
+                if (coords == null) {
+                    _formMessage.value = Pair("La position GPS pour la question obligatoire « ${qItem.question.libelle} » est requise.", true)
+                    return
+                }
+            }
         }
 
         viewModelScope.launch {
@@ -2252,7 +2276,7 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
 
     fun ensureLocalQuestionnairesReady() {
         viewModelScope.launch {
-            repository.ensurePublishedQuestionnaireExists()
+            repository.cleanDraftQuestionnaires()
             val list = repository.getAllQuestionnairesList().filter { !SyncService.isDraftStatus(it.statut) }
             if (list.isNotEmpty()) {
                 val currentSelected = _selectedQuestionnaireId.value
@@ -2262,6 +2286,8 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
                     sessionManager.getSelectedQuestionnaireId() ?: list.first().idQuestionnaire
                 }
                 selectQuestionnaire(idToSelect)
+            } else {
+                _selectedQuestionnaireId.value = null
             }
         }
     }
@@ -2289,7 +2315,10 @@ class SurveyViewModel(application: Application) : AndroidViewModel(application) 
             processPendingAnnonces()
             val user = _loggedInUser.value ?: currentUser.value
             val enqueteurId = if (user != null && !user.role.equals("ADMIN", ignoreCase = true)) user.idUser else null
-            syncService.synchronizeAll(enqueteurId)
+            val result = syncService.synchronizeAll(enqueteurId)
+            if (result.syncedCount > 0) {
+                _liveUpdateNotification.value = "${result.syncedCount} enquête(s) synchronisée(s) vers Supabase avec succès !"
+            }
         }
     }
 

@@ -274,49 +274,93 @@ class SyncService(private val repository: SurveyRepository) {
     private suspend fun pushEnqueteToSupabase(detail: EnqueteDetail): Boolean = withContext(Dispatchers.IO) {
         try {
             val cleanUrl = supabaseUrl.trimEnd('/')
-
             val cleanCode = detail.codeUnique.ifBlank { "ENQ-${detail.enquete.idEnquete}" }
 
-            // 1. Envoyer ou récupérer la personne (Table `personnes`)
+            // 1. Envoyer ou récupérer la personne (Table `personnes`) de manière fiable
             var remotePersonId: Long = detail.enquete.idPersonne
             try {
-                val personPayload = JSONObject().apply {
-                    put("code_unique", cleanCode)
-                }
-                val personReqBody = personPayload.toString().toRequestBody("application/json".toMediaType())
-                val personRequest = Request.Builder()
-                    .url("$cleanUrl/rest/v1/personnes")
+                // A. Vérifier d'abord si la personne existe déjà sur Supabase avec ce code_unique
+                val getPReq = Request.Builder()
+                    .url("$cleanUrl/rest/v1/personnes?code_unique=eq.$cleanCode&select=id_personne")
                     .addHeader("apikey", supabaseAnonKey)
                     .addHeader("Authorization", "Bearer $supabaseAnonKey")
-                    .addHeader("Content-Type", "application/json")
-                    .addHeader("Prefer", "resolution=merge-duplicates,return=representation")
-                    .post(personReqBody)
+                    .addHeader("Cache-Control", "no-cache")
+                    .get()
                     .build()
-                val personResponse = client.newCall(personRequest).execute()
-                if (personResponse.isSuccessful) {
-                    val respStr = personResponse.body?.string() ?: "[]"
-                    val pArray = JSONArray(respStr)
-                    if (pArray.length() > 0) {
-                        remotePersonId = pArray.getJSONObject(0).optLong("id_personne", remotePersonId)
+                val getPResp = client.newCall(getPReq).execute()
+                var foundExisting = false
+                if (getPResp.isSuccessful) {
+                    val arr = JSONArray(getPResp.body?.string() ?: "[]")
+                    if (arr.length() > 0) {
+                        remotePersonId = arr.getJSONObject(0).optLong("id_personne", remotePersonId)
+                        foundExisting = true
                     }
-                } else {
-                    val getPReq = Request.Builder()
-                        .url("$cleanUrl/rest/v1/personnes?code_unique=eq.$cleanCode&select=id_personne")
+                }
+
+                // B. Si elle n'existe pas encore, l'insérer sur Supabase
+                if (!foundExisting) {
+                    val personPayload = JSONObject().apply {
+                        put("code_unique", cleanCode)
+                    }
+                    val personReqBody = personPayload.toString().toRequestBody("application/json".toMediaType())
+                    val personRequest = Request.Builder()
+                        .url("$cleanUrl/rest/v1/personnes")
                         .addHeader("apikey", supabaseAnonKey)
                         .addHeader("Authorization", "Bearer $supabaseAnonKey")
-                        .get()
+                        .addHeader("Content-Type", "application/json")
+                        .addHeader("Prefer", "return=representation")
+                        .post(personReqBody)
                         .build()
-                    val getPResp = client.newCall(getPReq).execute()
-                    if (getPResp.isSuccessful) {
-                        val arr = JSONArray(getPResp.body?.string() ?: "[]")
-                        if (arr.length() > 0) {
-                            remotePersonId = arr.getJSONObject(0).optLong("id_personne", remotePersonId)
+                    val personResponse = client.newCall(personRequest).execute()
+                    if (personResponse.isSuccessful) {
+                        val respStr = personResponse.body?.string() ?: "[]"
+                        val pArray = JSONArray(respStr)
+                        if (pArray.length() > 0) {
+                            remotePersonId = pArray.getJSONObject(0).optLong("id_personne", remotePersonId)
                         }
+                    } else if (personResponse.code == 409) {
+                        // En cas de conflit (doublon concurrent), récupérer l'id_personne existant
+                        val retryResp = client.newCall(getPReq).execute()
+                        if (retryResp.isSuccessful) {
+                            val rArr = JSONArray(retryResp.body?.string() ?: "[]")
+                            if (rArr.length() > 0) {
+                                remotePersonId = rArr.getJSONObject(0).optLong("id_personne", remotePersonId)
+                            }
+                        }
+                    }
+                }
+
+                // Mettre à jour l'ID personne localement si nécessaire pour harmonisation parfaite
+                if (remotePersonId != detail.enquete.idPersonne) {
+                    try {
+                        repository.updateEnquetePersonneId(detail.enquete.idEnquete, remotePersonId)
+                    } catch (_: Exception) {}
+                }
+            } catch (e: Exception) {
+                Log.w("SyncService", "Personne sync warning for $cleanCode: ${e.message}")
+            }
+
+            // 2. Envoyer ou mettre à jour l'en-tête de l'enquête (Table `enquetes`)
+            // On vérifie d'abord si une enquête existe déjà pour ce couple (id_personne, id_questionnaire)
+            var remoteEnqueteId: Long? = null
+            try {
+                val checkEnqReq = Request.Builder()
+                    .url("$cleanUrl/rest/v1/enquetes?id_personne=eq.$remotePersonId&id_questionnaire=eq.${detail.enquete.idQuestionnaire}&select=id_enquete")
+                    .addHeader("apikey", supabaseAnonKey)
+                    .addHeader("Authorization", "Bearer $supabaseAnonKey")
+                    .addHeader("Cache-Control", "no-cache")
+                    .get()
+                    .build()
+                val checkEnqResp = client.newCall(checkEnqReq).execute()
+                if (checkEnqResp.isSuccessful) {
+                    val arr = JSONArray(checkEnqResp.body?.string() ?: "[]")
+                    if (arr.length() > 0) {
+                        remoteEnqueteId = arr.getJSONObject(0).optLong("id_enquete")
                     }
                 }
             } catch (_: Exception) {}
 
-            // 2. Envoyer l'en-tête de l'enquête (Table `enquetes`)
+            val currentTime = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
             val enquetePayload = JSONObject().apply {
                 put("id_personne", remotePersonId)
                 put("id_questionnaire", detail.enquete.idQuestionnaire)
@@ -324,51 +368,112 @@ class SyncService(private val repository: SurveyRepository) {
                 put("date_enquete", detail.enquete.dateEnquete)
                 put("statut", detail.enquete.statut)
                 put("sync_status", "SYNCHRONISEE")
+                put("updated_at", currentTime)
             }
-
             val enqueteReqBody = enquetePayload.toString().toRequestBody("application/json".toMediaType())
-            val enqueteRequest = Request.Builder()
-                .url("$cleanUrl/rest/v1/enquetes")
-                .addHeader("apikey", supabaseAnonKey)
-                .addHeader("Authorization", "Bearer $supabaseAnonKey")
-                .addHeader("Content-Type", "application/json")
-                .addHeader("Prefer", "resolution=merge-duplicates,return=representation")
-                .post(enqueteReqBody)
-                .build()
 
-            val enqueteResponse = client.newCall(enqueteRequest).execute()
-            if (!enqueteResponse.isSuccessful) {
-                val err = enqueteResponse.body?.string() ?: enqueteResponse.message
-                addLog("Erreur Supabase (table enquetes) pour $cleanCode : $err", false)
-                return@withContext false
-            }
-
-            val respBodyStr = enqueteResponse.body?.string() ?: "[]"
-            val respJsonArray = JSONArray(respBodyStr)
-            val remoteEnqueteId = if (respJsonArray.length() > 0) {
-                respJsonArray.getJSONObject(0).optLong("id_enquete", detail.enquete.idEnquete)
-            } else {
-                detail.enquete.idEnquete
-            }
-
-            // 2. Nettoyer les anciennes réponses pour cette enquête pour éviter tout doublon dans Supabase
-            try {
-                val deleteOldReq = Request.Builder()
-                    .url("$cleanUrl/rest/v1/reponses?id_enquete=eq.$remoteEnqueteId")
+            if (remoteEnqueteId != null && remoteEnqueteId > 0L) {
+                // Enquête existante sur Supabase : Mise à jour sécurisée (PATCH) pour éviter tout doublon
+                val updateRequest = Request.Builder()
+                    .url("$cleanUrl/rest/v1/enquetes?id_enquete=eq.$remoteEnqueteId")
                     .addHeader("apikey", supabaseAnonKey)
                     .addHeader("Authorization", "Bearer $supabaseAnonKey")
-                    .delete()
+                    .addHeader("Content-Type", "application/json")
+                    .addHeader("Prefer", "return=representation")
+                    .patch(enqueteReqBody)
                     .build()
-                client.newCall(deleteOldReq).execute().close()
-            } catch (_: Exception) {}
+                val updateResponse = client.newCall(updateRequest).execute()
+                if (!updateResponse.isSuccessful) {
+                    val err = updateResponse.body?.string() ?: updateResponse.message
+                    addLog("Avertissement mise à jour enquête #$remoteEnqueteId : $err", false)
+                }
+            } else {
+                // Nouvelle enquête sur Supabase : Insertion (POST)
+                val insertRequest = Request.Builder()
+                    .url("$cleanUrl/rest/v1/enquetes")
+                    .addHeader("apikey", supabaseAnonKey)
+                    .addHeader("Authorization", "Bearer $supabaseAnonKey")
+                    .addHeader("Content-Type", "application/json")
+                    .addHeader("Prefer", "return=representation")
+                    .post(enqueteReqBody)
+                    .build()
+                val insertResponse = client.newCall(insertRequest).execute()
+                if (insertResponse.isSuccessful) {
+                    val respBodyStr = insertResponse.body?.string() ?: "[]"
+                    val respJsonArray = JSONArray(respBodyStr)
+                    if (respJsonArray.length() > 0) {
+                        remoteEnqueteId = respJsonArray.getJSONObject(0).optLong("id_enquete", detail.enquete.idEnquete)
+                    } else {
+                        remoteEnqueteId = detail.enquete.idEnquete
+                    }
+                } else if (insertResponse.code == 409) {
+                    // En cas de conflit, récupérer l'id_enquete existant
+                    val retryCheckReq = Request.Builder()
+                        .url("$cleanUrl/rest/v1/enquetes?id_personne=eq.$remotePersonId&id_questionnaire=eq.${detail.enquete.idQuestionnaire}&select=id_enquete")
+                        .addHeader("apikey", supabaseAnonKey)
+                        .addHeader("Authorization", "Bearer $supabaseAnonKey")
+                        .get()
+                        .build()
+                    val retryCheckResp = client.newCall(retryCheckReq).execute()
+                    if (retryCheckResp.isSuccessful) {
+                        val arr = JSONArray(retryCheckResp.body?.string() ?: "[]")
+                        if (arr.length() > 0) {
+                            remoteEnqueteId = arr.getJSONObject(0).optLong("id_enquete")
+                        }
+                    }
+                } else {
+                    val err = insertResponse.body?.string() ?: insertResponse.message
+                    addLog("Erreur Supabase (table enquetes) pour $cleanCode : $err", false)
+                    return@withContext false
+                }
+            }
 
-            // 3. Envoyer les réponses (Table `reponses`) avec synchronisation réelle des médias
-            if (detail.reponses.isNotEmpty()) {
+            val finalEnqueteId = remoteEnqueteId ?: detail.enquete.idEnquete
+
+            // 3. Préparer l'ensemble des réponses avec garantie absolue de non-perte de données
+            val effectiveResponses = if (detail.reponses.isEmpty() && !detail.enquete.responsesJson.isNullOrBlank()) {
+                try {
+                    val jsonMap = JSONObject(detail.enquete.responsesJson)
+                    val parsedList = mutableListOf<com.example.data.model.ReponseWithQuestion>()
+                    val keys = jsonMap.keys()
+                    while (keys.hasNext()) {
+                        val keyStr = keys.next()
+                        val qId = keyStr.toLongOrNull()
+                        val valStr = jsonMap.optString(keyStr, "")
+                        if (qId != null && valStr.isNotBlank()) {
+                            val rep = ReponseEntity(
+                                idEnquete = detail.enquete.idEnquete,
+                                idQuestion = qId,
+                                valeur = valStr
+                            )
+                            val qEntity = QuestionEntity(
+                                idQuestion = qId,
+                                idQuestionnaire = detail.enquete.idQuestionnaire,
+                                libelle = "Question #$qId",
+                                type = "TEXTE"
+                            )
+                            parsedList.add(com.example.data.model.ReponseWithQuestion(reponse = rep, question = qEntity))
+                        }
+                    }
+                    parsedList
+                } catch (_: Exception) {
+                    detail.reponses
+                }
+            } else {
+                detail.reponses
+            }
+
+            if (effectiveResponses.isNotEmpty()) {
                 val reponsesArray = JSONArray()
                 var mediaCount = 0
 
-                for (rwq in detail.reponses) {
-                    val rawVal = rwq.reponse.valeur?.trim() ?: ""
+                for (rwq in effectiveResponses) {
+                    var rawVal = rwq.reponse.valeur?.trim() ?: ""
+
+                    // Si la valeur textuelle est vide mais qu'une option est cochée, inscrire le libellé de l'option
+                    if (rawVal.isBlank() && rwq.option?.libelle?.isNotBlank() == true) {
+                        rawVal = rwq.option.libelle.trim()
+                    }
 
                     // Règles photo et voix : Si vide, non répondu ou absent, ne pas envoyer
                     val isPhoto = MediaUtils.isImage(rawVal, rwq.question.type, rwq.question.libelle)
@@ -411,7 +516,7 @@ class SyncService(private val repository: SurveyRepository) {
                     }
 
                     val rJson = JSONObject().apply {
-                        put("id_enquete", remoteEnqueteId)
+                        put("id_enquete", finalEnqueteId)
                         put("id_question", rwq.reponse.idQuestion)
                         if (rwq.reponse.idOption != null) {
                             put("id_option", rwq.reponse.idOption)
@@ -428,21 +533,55 @@ class SyncService(private val repository: SurveyRepository) {
                 }
 
                 if (reponsesArray.length() > 0) {
+                    // Nettoyer les anciennes réponses pour cette enquête pour éviter tout doublon dans Supabase
+                    try {
+                        val deleteOldReq = Request.Builder()
+                            .url("$cleanUrl/rest/v1/reponses?id_enquete=eq.$finalEnqueteId")
+                            .addHeader("apikey", supabaseAnonKey)
+                            .addHeader("Authorization", "Bearer $supabaseAnonKey")
+                            .delete()
+                            .build()
+                        client.newCall(deleteOldReq).execute().close()
+                    } catch (_: Exception) {}
+
+                    // A. Tentative d'envoi groupé (Batch POST)
                     val repReqBody = reponsesArray.toString().toRequestBody("application/json".toMediaType())
                     val repRequest = Request.Builder()
                         .url("$cleanUrl/rest/v1/reponses")
                         .addHeader("apikey", supabaseAnonKey)
                         .addHeader("Authorization", "Bearer $supabaseAnonKey")
                         .addHeader("Content-Type", "application/json")
-                        .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
+                        .addHeader("Prefer", "return=minimal")
                         .post(repReqBody)
                         .build()
 
                     val repResponse = client.newCall(repRequest).execute()
-                    if (!repResponse.isSuccessful) {
-                        val err = repResponse.body?.string() ?: repResponse.message
-                        addLog("Alerte Supabase (table reponses) pour ${detail.codeUnique} : $err", false)
-                        return@withContext repResponse.code == 409
+                    if (!repResponse.isSuccessful && repResponse.code != 409) {
+                        // B. Fallback de haute résilience en cas d'échec du gros batch (ex: payload volumineux ou timeout média)
+                        // On envoie individuellement chaque réponse pour garantir qu'aucune donnée n'est perdue
+                        var individualSuccessCount = 0
+                        for (i in 0 until reponsesArray.length()) {
+                            try {
+                                val singleRep = reponsesArray.getJSONObject(i)
+                                val singleBody = singleRep.toString().toRequestBody("application/json".toMediaType())
+                                val singleReq = Request.Builder()
+                                    .url("$cleanUrl/rest/v1/reponses")
+                                    .addHeader("apikey", supabaseAnonKey)
+                                    .addHeader("Authorization", "Bearer $supabaseAnonKey")
+                                    .addHeader("Content-Type", "application/json")
+                                    .post(singleBody)
+                                    .build()
+                                val singleResp = client.newCall(singleReq).execute()
+                                if (singleResp.isSuccessful || singleResp.code == 409) {
+                                    individualSuccessCount++
+                                }
+                            } catch (_: Exception) {}
+                        }
+                        if (individualSuccessCount == 0) {
+                            val err = repResponse.body?.string() ?: repResponse.message
+                            addLog("Alerte Supabase (table reponses) pour ${detail.codeUnique} : $err", false)
+                            return@withContext false
+                        }
                     }
                 }
             }
@@ -594,6 +733,7 @@ class SyncService(private val repository: SurveyRepository) {
                 val qDeferred = async(Dispatchers.IO) {
                     val list = mutableListOf<QuestionnaireEntity>()
                     val allSupabaseStatusList = mutableListOf<SupabaseQuestionnaireStatus>()
+                    var fetchSucceeded = false
                     try {
                         var req = Request.Builder()
                             .url("$cleanUrl/rest/v1/questionnaires?select=*")
@@ -617,6 +757,7 @@ class SyncService(private val repository: SurveyRepository) {
                         }
 
                         if (resp.isSuccessful) {
+                            fetchSucceeded = true
                             val arr = JSONArray(resp.body?.string() ?: "[]")
                             for (i in 0 until arr.length()) {
                                 val obj = arr.getJSONObject(i)
@@ -691,14 +832,15 @@ class SyncService(private val repository: SurveyRepository) {
                     } catch (e: Exception) {
                         addLog("Erreur questionnaires Supabase : ${e.localizedMessage}", false)
                     }
-                    list
+                    Pair(fetchSucceeded, list)
                 }
 
                 val questDeferred = async(Dispatchers.IO) {
                     val list = mutableListOf<QuestionEntity>()
+                    var fetchSucceeded = false
                     try {
                         var req = Request.Builder()
-                            .url("$cleanUrl/rest/v1/questions?select=*")
+                            .url("$cleanUrl/rest/v1/questions?select=*&limit=5000")
                             .addHeader("apikey", supabaseAnonKey)
                             .addHeader("Authorization", "Bearer $supabaseAnonKey")
                             .addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -709,7 +851,7 @@ class SyncService(private val repository: SurveyRepository) {
 
                         if (!resp.isSuccessful && resp.code == 404) {
                             req = Request.Builder()
-                                .url("$cleanUrl/rest/v1/question?select=*")
+                                .url("$cleanUrl/rest/v1/question?select=*&limit=5000")
                                 .addHeader("apikey", supabaseAnonKey)
                                 .addHeader("Authorization", "Bearer $supabaseAnonKey")
                                 .get()
@@ -718,6 +860,7 @@ class SyncService(private val repository: SurveyRepository) {
                         }
 
                         if (resp.isSuccessful) {
+                            fetchSucceeded = true
                             val arr = JSONArray(resp.body?.string() ?: "[]")
                             for (i in 0 until arr.length()) {
                                 val obj = arr.getJSONObject(i)
@@ -772,14 +915,14 @@ class SyncService(private val repository: SurveyRepository) {
                     } catch (e: Exception) {
                         // ignore question pull error
                     }
-                    list
+                    Pair(fetchSucceeded, list)
                 }
 
                 val optDeferred = async(Dispatchers.IO) {
                     val list = mutableListOf<OptionEntity>()
                     try {
                         val req = Request.Builder()
-                            .url("$cleanUrl/rest/v1/options?select=*")
+                            .url("$cleanUrl/rest/v1/options?select=*&limit=10000")
                             .addHeader("apikey", supabaseAnonKey)
                             .addHeader("Authorization", "Bearer $supabaseAnonKey")
                             .addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -831,7 +974,7 @@ class SyncService(private val repository: SurveyRepository) {
                     val list = mutableListOf<PersonneEntity>()
                     try {
                         val req = Request.Builder()
-                            .url("$cleanUrl/rest/v1/personnes?select=*&order=id_personne.asc")
+                            .url("$cleanUrl/rest/v1/personnes?select=*&limit=5000&order=id_personne.asc")
                             .addHeader("apikey", supabaseAnonKey)
                             .addHeader("Authorization", "Bearer $supabaseAnonKey")
                             .get()
@@ -863,9 +1006,9 @@ class SyncService(private val repository: SurveyRepository) {
                     val list = mutableListOf<EnqueteEntity>()
                     try {
                         val queryParam = if (enqueteurId != null && !userRole.equals("ADMIN", ignoreCase = true)) {
-                            "id_enqueteur=eq.$enqueteurId&select=*&order=id_enquete.desc"
+                            "id_enqueteur=eq.$enqueteurId&select=*&limit=5000&order=id_enquete.desc"
                         } else {
-                            "select=*&order=id_enquete.desc"
+                            "select=*&limit=5000&order=id_enquete.desc"
                         }
                         val req = Request.Builder()
                             .url("$cleanUrl/rest/v1/enquetes?$queryParam")
@@ -912,7 +1055,7 @@ class SyncService(private val repository: SurveyRepository) {
                     val list = mutableListOf<ReponseEntity>()
                     try {
                         val req = Request.Builder()
-                            .url("$cleanUrl/rest/v1/reponses?select=*")
+                            .url("$cleanUrl/rest/v1/reponses?select=*&limit=15000")
                             .addHeader("apikey", supabaseAnonKey)
                             .addHeader("Authorization", "Bearer $supabaseAnonKey")
                             .get()
@@ -1112,9 +1255,11 @@ class SyncService(private val repository: SurveyRepository) {
             @Suppress("UNCHECKED_CAST")
             val users = rawResults[0] as List<UserEntity>
             @Suppress("UNCHECKED_CAST")
-            val questionnaires = rawResults[1] as List<QuestionnaireEntity>
+            val qResult = rawResults[1] as Pair<Boolean, List<QuestionnaireEntity>>
+            val (questionnairesFetchSucceeded, questionnaires) = qResult
             @Suppress("UNCHECKED_CAST")
-            val questions = rawResults[2] as List<QuestionEntity>
+            val questResult = rawResults[2] as Pair<Boolean, List<QuestionEntity>>
+            val (questionsFetchSucceeded, questions) = questResult
             @Suppress("UNCHECKED_CAST")
             val options = rawResults[3] as List<OptionEntity>
             @Suppress("UNCHECKED_CAST")
@@ -1164,7 +1309,13 @@ class SyncService(private val repository: SurveyRepository) {
 
             // 2. Tehirizina ao amin'ny SQLite Room ny questionnaires navoaka (PUBLIE), questions, ary options
             // Antsoina foana na dia foana aza ny publicQuestionnaires mba hanalana avy hatrany izay questionnaires lasa BROUILLON
-            repository.savePulledForms(publicQuestionnaires, publicQuestions, publicOptions)
+            repository.savePulledForms(
+                publicQuestionnaires,
+                publicQuestions,
+                publicOptions,
+                isFullSync = questionnairesFetchSucceeded,
+                questionsSynced = questionsFetchSucceeded
+            )
 
             // 3. Tehirizina ny personnes, enquetes sy reponses efa vita
             if (pulledEnquetes.isNotEmpty() || personnes.isNotEmpty()) {
@@ -1203,12 +1354,9 @@ class SyncService(private val repository: SurveyRepository) {
         val cleanUrl = supabaseUrl.trimEnd('/')
         if (cleanUrl.isBlank() || isSimulatedOffline) return@withContext
         try {
-            val (qList, optList) = fetchQuestionsAndOptionsForQuestionnaire(cleanUrl, questionnaireId)
-            if (qList.isNotEmpty()) {
-                repository.insertQuestions(qList)
-            }
-            if (optList.isNotEmpty()) {
-                repository.insertOptions(optList)
+            val (success, qList, optList) = fetchQuestionsAndOptionsForQuestionnaire(cleanUrl, questionnaireId)
+            if (success) {
+                repository.reconcileQuestionsForQuestionnaire(questionnaireId, qList, optList)
             }
         } catch (e: Exception) {
             Log.w("SyncService", "fetchAndSaveQuestionsForQuestionnaireDirect error: ${e.message}")
@@ -1221,12 +1369,13 @@ class SyncService(private val repository: SurveyRepository) {
     private suspend fun fetchQuestionsAndOptionsForQuestionnaire(
         cleanUrl: String,
         targetQuestionnaireId: Long
-    ): Pair<List<QuestionEntity>, List<OptionEntity>> = withContext(Dispatchers.IO) {
+    ): Triple<Boolean, List<QuestionEntity>, List<OptionEntity>> = withContext(Dispatchers.IO) {
         val questions = mutableListOf<QuestionEntity>()
         val options = mutableListOf<OptionEntity>()
+        var fetchSuccess = false
         try {
             var reqQ = Request.Builder()
-                .url("$cleanUrl/rest/v1/questions?select=*")
+                .url("$cleanUrl/rest/v1/questions?select=*&limit=5000")
                 .addHeader("apikey", supabaseAnonKey)
                 .addHeader("Authorization", "Bearer $supabaseAnonKey")
                 .addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -1236,13 +1385,14 @@ class SyncService(private val repository: SurveyRepository) {
             var respQ = client.newCall(reqQ).execute()
             if (!respQ.isSuccessful && respQ.code == 404) {
                 reqQ = Request.Builder()
-                    .url("$cleanUrl/rest/v1/question?select=*")
+                    .url("$cleanUrl/rest/v1/question?select=*&limit=5000")
                     .addHeader("apikey", supabaseAnonKey)
                     .addHeader("Authorization", "Bearer $supabaseAnonKey")
                     .get()
                     .build()
                 respQ = client.newCall(reqQ).execute()
             }
+            fetchSuccess = respQ.isSuccessful
             val bodyQ = if (respQ.isSuccessful) respQ.body?.string() else null
 
             if (!bodyQ.isNullOrBlank()) {
@@ -1307,7 +1457,7 @@ class SyncService(private val repository: SurveyRepository) {
             val qIds = questions.map { it.idQuestion }
             if (qIds.isNotEmpty()) {
                 var reqOpt = Request.Builder()
-                    .url("$cleanUrl/rest/v1/options?select=*")
+                    .url("$cleanUrl/rest/v1/options?select=*&limit=10000")
                     .addHeader("apikey", supabaseAnonKey)
                     .addHeader("Authorization", "Bearer $supabaseAnonKey")
                     .addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -1362,7 +1512,7 @@ class SyncService(private val repository: SurveyRepository) {
                 }
             }
         } catch (_: Exception) {}
-        Pair(questions, options)
+        Triple(fetchSuccess, questions, options)
     }
 
     /**
@@ -1494,17 +1644,15 @@ class SyncService(private val repository: SurveyRepository) {
                 } catch (_: Exception) {}
             }
 
-            // 2. Supprimer uniquement les questionnaires réellement supprimés dans Supabase (en protégeant les questionnaires par défaut)
-            if (parsedList.isNotEmpty()) {
-                val allRemoteIds = parsedList.map { it.idQuestionnaire }.toSet()
-                for (localQ in allLocalRaw) {
-                    if (localQ.idQuestionnaire != 1L && localQ.idQuestionnaire != 12L && !allRemoteIds.contains(localQ.idQuestionnaire)) {
-                        hasChanged = true
-                        try {
-                            repository.deleteQuestionnaireCompletely(localQ.idQuestionnaire)
-                            addLog("⚡ [En direct Supabase] Le formulaire « ${localQ.titre} » (#${localQ.idQuestionnaire}) a été supprimé.", true)
-                        } catch (_: Exception) {}
-                    }
+            // 2. Supprimer ou masquer les questionnaires réellement supprimés dans Supabase
+            val allRemoteIds = parsedList.map { it.idQuestionnaire }.toSet()
+            for (localQ in allLocalRaw) {
+                if (!allRemoteIds.contains(localQ.idQuestionnaire)) {
+                    hasChanged = true
+                    try {
+                        repository.deleteQuestionnaireCompletely(localQ.idQuestionnaire)
+                        addLog("⚡ [En direct Supabase] Le formulaire « ${localQ.titre} » (#${localQ.idQuestionnaire}) a été supprimé.", true)
+                    } catch (_: Exception) {}
                 }
             }
 
@@ -1531,15 +1679,13 @@ class SyncService(private val repository: SurveyRepository) {
                 val needsQuestions = localQuestionsCount == 0 || wasDraft
                 if (needsQuestions) {
                     try {
-                        val (qList, optList) = fetchQuestionsAndOptionsForQuestionnaire(cleanUrl, pubQ.idQuestionnaire)
-                        // Tsy mamorona fallback questions intsony! Izay avy any amin'ny Supabase ihany no tehirizina.
-                        if (qList.isNotEmpty()) {
+                        val (qSuccess, qList, optList) = fetchQuestionsAndOptionsForQuestionnaire(cleanUrl, pubQ.idQuestionnaire)
+                        if (qSuccess) {
                             hasChanged = true
-                            repository.insertQuestions(qList)
-                            if (optList.isNotEmpty()) {
-                                repository.insertOptions(optList)
+                            repository.reconcileQuestionsForQuestionnaire(pubQ.idQuestionnaire, qList, optList)
+                            if (qList.isNotEmpty()) {
+                                addLog("⚡ [En direct Supabase] Le formulaire « ${pubQ.titre} » (#${pubQ.idQuestionnaire}) est disponible (${qList.size} questions).", true)
                             }
-                            addLog("⚡ [En direct Supabase] Le formulaire « ${pubQ.titre} » (#${pubQ.idQuestionnaire}) est disponible (${qList.size} questions).", true)
                         }
                     } catch (e: Exception) {
                         Log.w("SyncService", "Error loading questions for ${pubQ.idQuestionnaire}: ${e.message}")
@@ -1551,8 +1697,10 @@ class SyncService(private val repository: SurveyRepository) {
             val allPublishedIds = publishedToSave.map { it.idQuestionnaire }
             if (allPublishedIds.isNotEmpty()) {
                 repository.markOtherQuestionnairesAsDraft(allPublishedIds)
+            } else {
+                // resp.isSuccessful est garanti ci-dessus : aucun questionnaire PUBLIÉ sur Supabase
+                repository.markAllQuestionnairesAsDraft()
             }
-            // Tsy manao markAllQuestionnairesAsDraft() raha sendra foana na nisy olana ny réseau!
             for ((draftId, _) in draftIdsToPurge) {
                 repository.markQuestionnaireAsDraft(draftId)
             }

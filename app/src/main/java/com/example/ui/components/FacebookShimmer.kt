@@ -201,38 +201,32 @@ fun FacebookSurveyListSkeleton(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .background(Color.Transparent)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // Search bar skeleton (Underlined style)
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+        // Search capsule skeleton
+        ShimmerBox(height = 50.dp, shape = RoundedCornerShape(16.dp))
+
+        // 3 KPI sync filter cards skeleton
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
-            ) {
-                ShimmerBox(width = 24.dp, height = 24.dp, shape = CircleShape)
-                ShimmerBox(height = 18.dp, modifier = Modifier.weight(1f), shape = RoundedCornerShape(4.dp))
-                ShimmerBox(width = 20.dp, height = 16.dp, shape = RoundedCornerShape(6.dp))
-            }
-            ShimmerBox(height = 1.5.dp, shape = RoundedCornerShape(1.dp), modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp))
+            ShimmerBox(modifier = Modifier.weight(1f), height = 84.dp, shape = RoundedCornerShape(16.dp))
+            ShimmerBox(modifier = Modifier.weight(1f), height = 84.dp, shape = RoundedCornerShape(16.dp))
+            ShimmerBox(modifier = Modifier.weight(1f), height = 84.dp, shape = RoundedCornerShape(16.dp))
         }
 
-        // Filter chips skeleton row
+        // Questionnaire filter pills skeleton row
         Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
-            ShimmerBox(width = 80.dp, height = 32.dp, shape = RoundedCornerShape(16.dp))
-            ShimmerBox(width = 110.dp, height = 32.dp, shape = RoundedCornerShape(16.dp))
-            ShimmerBox(width = 95.dp, height = 32.dp, shape = RoundedCornerShape(16.dp))
+            ShimmerBox(width = 82.dp, height = 34.dp, shape = RoundedCornerShape(14.dp))
+            ShimmerBox(width = 128.dp, height = 34.dp, shape = RoundedCornerShape(14.dp))
+            ShimmerBox(width = 104.dp, height = 34.dp, shape = RoundedCornerShape(14.dp))
         }
-
-        Spacer(modifier = Modifier.height(2.dp))
 
         // Survey Cards Skeletons
         repeat(3) {

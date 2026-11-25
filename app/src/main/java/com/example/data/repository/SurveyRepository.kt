@@ -640,6 +640,12 @@ class SurveyRepository(private val surveyDao: SurveyDao, private val context: Co
         surveyDao.updateSyncStatus(id, syncStatus, currentTime)
     }
 
+    suspend fun updateEnquetePersonneId(id: Long, newPersonneId: Long) {
+        try {
+            surveyDao.updateEnquetePersonneId(id, newPersonneId)
+        } catch (_: Exception) {}
+    }
+
     suspend fun deleteEnquete(id: Long) {
         surveyDao.deleteReponsesForEnquete(id)
         surveyDao.deleteEnqueteById(id)
@@ -839,13 +845,6 @@ class SurveyRepository(private val surveyDao: SurveyDao, private val context: Co
     }
 
     suspend fun deleteQuestionnaireCompletely(id: Long) {
-        if (id == 12L) {
-            // Arovana tsy ho voafafa velively ny questionnaire fototra
-            try {
-                surveyDao.markQuestionnaireAsPublished(12L)
-            } catch (_: Exception) {}
-            return
-        }
         try {
             val enquetes = surveyDao.getEnquetesByQuestionnaireId(id)
             if (enquetes.isNotEmpty()) {
@@ -881,11 +880,44 @@ class SurveyRepository(private val surveyDao: SurveyDao, private val context: Co
         } catch (_: Exception) {}
     }
 
+    suspend fun reconcileQuestionsForQuestionnaire(
+        questionnaireId: Long,
+        questions: List<QuestionEntity>,
+        options: List<OptionEntity>
+    ) {
+        try {
+            val qIds = questions.map { it.idQuestion }.distinct()
+            if (qIds.isNotEmpty()) {
+                surveyDao.deleteRemovedQuestionsForQuestionnaire(questionnaireId, qIds)
+                surveyDao.deleteOrphanOptions()
+                surveyDao.insertQuestions(questions)
+            } else {
+                surveyDao.deleteAllUnusedQuestionsForQuestionnaire(questionnaireId)
+                surveyDao.deleteOrphanOptions()
+            }
+            if (options.isNotEmpty()) {
+                surveyDao.insertOptions(options)
+            }
+        } catch (_: Exception) {
+            for (q in questions) {
+                try {
+                    surveyDao.insertQuestion(q)
+                } catch (_: Exception) {}
+            }
+            for (opt in options) {
+                try {
+                    surveyDao.insertOption(opt)
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
     suspend fun savePulledForms(
         questionnaires: List<QuestionnaireEntity>,
         questions: List<QuestionEntity>,
         options: List<OptionEntity>,
-        isFullSync: Boolean = true
+        isFullSync: Boolean = true,
+        questionsSynced: Boolean = true
     ) {
         try {
             surveyDao.markDraftQuestionnairesAsBrouillon()
@@ -898,13 +930,18 @@ class SurveyRepository(private val surveyDao: SurveyDao, private val context: Co
             com.example.data.sync.SyncService.isDraftStatus(it.statut) || !com.example.data.sync.SyncService.isPublicStatus(it.statut)
         }
 
-        // Seuls les questionnaires confirmés issus de Supabase sont mis à jour
-        // Raha miovaova ny connexion na tsy nisy formulaire vaovao voaray dia arovana ny questionnaires efa voatahiry ao amin'ny SQLite
-        if (isFullSync && nonDraftQuestionnaires.isNotEmpty()) {
-            val publicIds = nonDraftQuestionnaires.map { it.idQuestionnaire }.distinct()
-            try {
-                surveyDao.markOtherQuestionnairesAsDraft(publicIds)
-            } catch (_: Exception) {}
+        // Reconcile active questionnaires with the remote database when full fetch succeeded
+        if (isFullSync) {
+            if (nonDraftQuestionnaires.isNotEmpty()) {
+                val publicIds = nonDraftQuestionnaires.map { it.idQuestionnaire }.distinct()
+                try {
+                    surveyDao.markOtherQuestionnairesAsDraft(publicIds)
+                } catch (_: Exception) {}
+            } else {
+                try {
+                    surveyDao.markAllQuestionnairesAsDraft()
+                } catch (_: Exception) {}
+            }
         }
 
         // Sauvegarder dans SQLite (Room)
@@ -923,17 +960,34 @@ class SurveyRepository(private val surveyDao: SurveyDao, private val context: Co
             }
         }
 
-        if (questions.isNotEmpty()) {
-            val fallbackQId = nonDraftQuestionnaires.firstOrNull()?.idQuestionnaire ?: 1L
-            val safeQuestions = questions.map { q ->
-                if (q.idQuestionnaire <= 0L) q.copy(idQuestionnaire = fallbackQId) else q
+        if (questionsSynced) {
+            val fallbackQId = nonDraftQuestionnaires.firstOrNull()?.idQuestionnaire
+            val safeQuestions = if (fallbackQId != null) {
+                questions.map { q ->
+                    if (q.idQuestionnaire <= 0L) q.copy(idQuestionnaire = fallbackQId) else q
+                }
+            } else {
+                questions.filter { it.idQuestionnaire > 0L }
             }
+
             try {
-                // Delete any old synthetic/dummy questions so only authentic remote questions exist
+                // Remove synthetic questions and any questions removed on the remote database (respecting reponses FK)
                 surveyDao.deleteSyntheticQuestions()
+                for (q in nonDraftQuestionnaires) {
+                    val keepIds = safeQuestions
+                        .filter { it.idQuestionnaire == q.idQuestionnaire }
+                        .map { it.idQuestion }
+                        .distinct()
+                    if (keepIds.isNotEmpty()) {
+                        surveyDao.deleteRemovedQuestionsForQuestionnaire(q.idQuestionnaire, keepIds)
+                    } else {
+                        surveyDao.deleteAllUnusedQuestionsForQuestionnaire(q.idQuestionnaire)
+                    }
+                }
                 surveyDao.deleteOrphanOptions()
-                // Upsert directly without deleting existing questions to prevent breaking reponses foreign keys
-                surveyDao.insertQuestions(safeQuestions)
+                if (safeQuestions.isNotEmpty()) {
+                    surveyDao.insertQuestions(safeQuestions)
+                }
             } catch (e: Exception) {
                 for (q in safeQuestions) {
                     try {
@@ -1113,25 +1167,44 @@ class SurveyRepository(private val surveyDao: SurveyDao, private val context: Co
 
             // Ensure personnes exist for foreign keys
             val existingPersonneIds = surveyDao.getAllPersonnes().map { it.idPersonne }.toSet()
+            val missingPersonneIds = enquetes.map { it.idPersonne }.filter { !existingPersonneIds.contains(it) }.distinct()
+            if (missingPersonneIds.isNotEmpty()) {
+                val stubPersonnes = missingPersonneIds.map { pid ->
+                    PersonneEntity(idPersonne = pid, codeUnique = "PERS-$pid")
+                }
+                surveyDao.insertPersonnes(stubPersonnes)
+            }
+            val allPersonneIds = surveyDao.getAllPersonnes().map { it.idPersonne }.toSet()
 
-            val enquetesToInsert = enquetes.filter { existingPersonneIds.contains(it.idPersonne) }.map { enq ->
+            // Protect local pending (EN_ATTENTE or ERREUR) surveys from being overwritten
+            val pendingOrErrorSurveys = surveyDao.getPendingOrErrorSurveysList()
+            val pendingEnqIds = pendingOrErrorSurveys.map { it.idEnquete }.toSet()
+            val pendingPersonneIds = pendingOrErrorSurveys.map { it.idPersonne }.toSet()
+
+            val enquetesToInsert = enquetes.filter { enq ->
+                allPersonneIds.contains(enq.idPersonne) &&
+                !pendingEnqIds.contains(enq.idEnquete) &&
+                !pendingPersonneIds.contains(enq.idPersonne)
+            }.map { enq ->
                 val safeQId = if (existingQIds.contains(enq.idQuestionnaire)) enq.idQuestionnaire else fallbackQId
                 enq.copy(idQuestionnaire = safeQId)
             }
 
-            // Insert / update enquetes in SQLite
+            // Insert / update enquetes in SQLite (preserving pending/error local surveys)
             if (enquetesToInsert.isNotEmpty()) {
                 surveyDao.insertEnquetes(enquetesToInsert)
             }
 
-            // 4. Insert responses safely
+            // 4. Insert responses safely for pulled enquetes
             if (reponses.isNotEmpty()) {
                 val refreshedEnquetes = surveyDao.getAllEnquetesList().associateBy { it.idEnquete }
                 val existingQuesIds = surveyDao.getAllQuestionsList().map { it.idQuestion }.toSet()
                 val existingOptIds = surveyDao.getAllOptionsList().map { it.idOption }.toSet()
 
                 val validReponses = reponses.filter { rep ->
-                    refreshedEnquetes.containsKey(rep.idEnquete) && existingQuesIds.contains(rep.idQuestion)
+                    refreshedEnquetes.containsKey(rep.idEnquete) &&
+                    !pendingEnqIds.contains(rep.idEnquete) &&
+                    existingQuesIds.contains(rep.idQuestion)
                 }.map { rep ->
                     if (rep.idOption != null && !existingOptIds.contains(rep.idOption)) {
                         rep.copy(idOption = null)
@@ -1143,16 +1216,6 @@ class SurveyRepository(private val surveyDao: SurveyDao, private val context: Co
                 if (validReponses.isNotEmpty()) {
                     surveyDao.insertReponses(validReponses)
                 }
-            }
-
-            // 5. Reconcile deleted enquetes from Supabase:
-            // Any local enquete that was SYNCHRONISEE but no longer exists on Supabase was deleted remotely!
-            // We safely delete it from SQLite without touching local pending EN_ATTENTE enquetes.
-            val remoteEnqueteIds = enquetes.map { it.idEnquete }
-            if (remoteEnqueteIds.isNotEmpty()) {
-                try {
-                    surveyDao.reconcileRemoteDeletedEnquetes(remoteEnqueteIds)
-                } catch (_: Exception) {}
             }
         } catch (e: Exception) {
             // Fallback: insert individually if batch encounters an issue
@@ -1303,11 +1366,6 @@ class SurveyRepository(private val surveyDao: SurveyDao, private val context: Co
             )
         }
 
-        // Raha mbola tsy misy questionnaire voatahiry dia ampidirina ny questionnaire fototra "Enquête Terrain"
-        if (surveyDao.countQuestionnaires() == 0) {
-            seedDefaultQuestionnaireAndQuestions()
-        }
-
         // Raha mbola tsy misy annonce dia ampidirina ireo annonce ofisialy avy amin'ny Supabase
         if (surveyDao.countAnnonces() == 0) {
             seedDefaultAnnonces()
@@ -1321,40 +1379,15 @@ class SurveyRepository(private val surveyDao: SurveyDao, private val context: Co
     }
 
     suspend fun ensureDefaultSurveyExists() {
-        ensurePublishedQuestionnaireExists()
+        cleanDraftQuestionnaires()
     }
 
     /**
-     * Miantoka fa misy questionnaire azo ampiasaina foana ao amin'ny finday (SQLite)
-     * na dia tapaka na miovaova aza ny connexion.
+     * Tsy mamorona questionnaire na fanontaniana (anisan'izany ny GPS) an-katerena intsony eo an-toerana :
+     * izay questionnaire sy fanontaniana tena avy any amin'ny base de données ihany no aseho.
      */
     suspend fun ensurePublishedQuestionnaireExists() {
-        try {
-            val list = surveyDao.getAllQuestionnairesList()
-            val active = list.filter { !com.example.data.sync.SyncService.isDraftStatus(it.statut) }
-            if (active.isEmpty()) {
-                val q12 = surveyDao.getQuestionnaireById(12L)
-                if (q12 != null) {
-                    surveyDao.markQuestionnaireAsPublished(12L)
-                    if (surveyDao.countQuestionsByQuestionnaire(12L) == 0) {
-                        seedDefaultQuestionnaireAndQuestions()
-                    }
-                } else if (list.isNotEmpty()) {
-                    surveyDao.markQuestionnaireAsPublished(list.first().idQuestionnaire)
-                } else {
-                    seedDefaultQuestionnaireAndQuestions()
-                }
-            } else {
-                val firstActive = active.first()
-                if (surveyDao.countQuestionsByQuestionnaire(firstActive.idQuestionnaire) == 0) {
-                    seedDefaultQuestionnaireAndQuestions()
-                }
-            }
-        } catch (_: Exception) {
-            try {
-                seedDefaultQuestionnaireAndQuestions()
-            } catch (_: Exception) {}
-        }
+        cleanDraftQuestionnaires()
     }
 
     suspend fun seedDefaultQuestionnaireAndQuestions() {
@@ -1390,7 +1423,8 @@ class SurveyRepository(private val surveyDao: SurveyDao, private val context: Co
                 QuestionEntity(80L, 12L, "Nombre de personnes dans le ménage", "NOMBRE", obligatoire = false, ordre = 19),
                 QuestionEntity(81L, 12L, "Chef de ménage : Oui / Non", "CHOIX_UNIQUE", obligatoire = false, ordre = 20),
                 QuestionEntity(82L, 12L, "Lien avec le chef de ménage : Lui-même / Époux(se) / Enfant / Parent / Autre", "CHOIX_UNIQUE", obligatoire = false, ordre = 21),
-                QuestionEntity(89L, 12L, "Photo [PHOTO]", "TEXTE", obligatoire = false, ordre = 22)
+                QuestionEntity(89L, 12L, "Photo [PHOTO]", "TEXTE", obligatoire = false, ordre = 22),
+                QuestionEntity(90L, 12L, "Coordonnées GPS [GPS]", "GPS", obligatoire = false, ordre = 23)
             )
             surveyDao.insertQuestions(questions)
 

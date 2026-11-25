@@ -2,12 +2,19 @@ package com.example.ui.screens
 
 import android.app.Activity
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.unit.Dp
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -31,6 +38,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -39,6 +47,10 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import com.example.R
@@ -88,9 +100,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
@@ -353,41 +368,27 @@ fun LoginScreen(
                 .background(Color.White.copy(alpha = 0.85f))
         )
 
-        // Sleek refined wecollect logo positioned cleanly at the top
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(top = 22.dp, bottom = 4.dp)
-                .align(Alignment.TopCenter)
-                .testTag("login_hero_banner"),
-            contentAlignment = Alignment.Center
-        ) {
-            Image(
-                painter = painterResource(id = R.drawable.ic_wecollect_logo),
-                contentDescription = "wecollect logo",
-                modifier = Modifier
-                    .fillMaxWidth(0.42f)
-                    .height(36.dp),
-                contentScale = ContentScale.Fit
-            )
-        }
-
-        // Form container centered in the screen
+        // Form container aligned near the top so the hero phone sits nicely higher up
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding(),
-            contentAlignment = Alignment.Center
+            contentAlignment = Alignment.TopCenter
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .verticalScroll(scrollState),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
+                verticalArrangement = Arrangement.Top
             ) {
+                Spacer(modifier = Modifier.height(6.dp))
+
+                LoginPhoneHeroHeader()
+
+                Spacer(modifier = Modifier.height(8.dp))
+
                 // Main Title: "Connexion"
                 Text(
                     text = "Connexion",
@@ -662,10 +663,14 @@ fun LoginScreen(
                     )
                 ) {
                     if (isLoginAnimating || isLoggingIn) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(22.dp),
-                            color = Color(0xFF0284C7),
-                            strokeWidth = 2.dp
+                        FacebookBouncingDotsLoader(
+                            modifier = Modifier
+                                .height(26.dp)
+                                .testTag("facebook_dots_loader"),
+                            dotSize = 8.dp,
+                            dotColor = Color(0xFF0284C7),
+                            spaceBetween = 6.dp,
+                            travelDistance = 6.dp
                         )
                     } else {
                         Text(
@@ -686,5 +691,125 @@ fun LoginScreen(
 }
 }
 
+/**
+ * Animation telo teboka mitembotemboka tahaka ny an'ny Facebook / Messenger.
+ */
+@Composable
+fun FacebookBouncingDotsLoader(
+    modifier: Modifier = Modifier,
+    dotSize: Dp = 8.dp,
+    dotColor: Color = Color(0xFF0284C7),
+    spaceBetween: Dp = 6.dp,
+    travelDistance: Dp = 6.dp
+) {
+    val dots = listOf(
+        remember { Animatable(0f) },
+        remember { Animatable(0f) },
+        remember { Animatable(0f) }
+    )
 
+    dots.forEachIndexed { index, animatable ->
+        LaunchedEffect(animatable) {
+            delay(index * 150L)
+            animatable.animateTo(
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = keyframes {
+                        durationMillis = 1000
+                        0.0f at 0 using FastOutSlowInEasing
+                        1.0f at 300 using FastOutSlowInEasing
+                        0.0f at 600 using FastOutSlowInEasing
+                        0.0f at 1000 using FastOutSlowInEasing
+                    },
+                    repeatMode = RepeatMode.Restart
+                )
+            )
+        }
+    }
+
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(spaceBetween),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        dots.forEach { animatable ->
+            val value = animatable.value
+            Box(
+                modifier = Modifier
+                    .size(dotSize)
+                    .offset(y = -travelDistance * value)
+                    .scale(0.85f + (0.3f * value))
+                    .background(
+                        color = dotColor.copy(alpha = 0.45f + (0.55f * value)),
+                        shape = CircleShape
+                    )
+            )
+        }
+    }
+}
+
+/**
+ * Sary telefaona Android eo amin'ny tapany ambony: lehibe, ny tampany ambony ihany no hita,
+ * mahitsy tsara miaraka amin'ny aloka mazava malefaka sy fifaranana malama.
+ */
+@Composable
+fun LoginPhoneHeroHeader(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .widthIn(max = 400.dp)
+            .height(212.dp)
+            .clipToBounds()
+            .testTag("android_phone_hero_image"),
+        contentAlignment = Alignment.TopCenter
+    ) {
+        // Ambient studio sky-blue glow behind the phone (fades cleanly to transparent before edges)
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val center = Offset(size.width / 2f, size.height * 0.48f)
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        Color(0xFF0EA5E9).copy(alpha = 0.16f),
+                        Color(0xFF38BDF8).copy(alpha = 0.06f),
+                        Color.Transparent
+                    ),
+                    center = center,
+                    radius = size.height * 0.52f
+                ),
+                radius = size.height * 0.52f,
+                center = center
+            )
+        }
+
+        // Upper-half smartphone with smooth bottom alpha fade
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+                .drawWithContent {
+                    drawContent()
+                    drawRect(
+                        brush = Brush.verticalGradient(
+                            0.0f to Color.Black,
+                            0.78f to Color.Black,
+                            1.0f to Color.Transparent
+                        ),
+                        blendMode = BlendMode.DstIn
+                    )
+                },
+            contentAlignment = Alignment.TopCenter
+        ) {
+            Image(
+                painter = painterResource(id = R.drawable.img_phone_only_transparent),
+                contentDescription = "Android Smartphone",
+                modifier = Modifier
+                    .wrapContentSize(align = Alignment.TopCenter, unbounded = true)
+                    .offset(x = (-12).dp, y = (-14).dp)
+                    .size(435.dp)
+                    .rotate(-18f),
+                contentScale = ContentScale.Fit
+            )
+        }
+    }
+}
 

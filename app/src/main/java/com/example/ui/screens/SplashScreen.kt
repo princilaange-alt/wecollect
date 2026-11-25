@@ -9,19 +9,26 @@ import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
@@ -39,74 +46,34 @@ import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import com.example.R
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlin.math.cos
-import kotlin.math.sin
 
 /**
- * Dynamic, lively startup splash screen showcasing the "WeCollect" brand.
- * Features an energetic elastic entrance bounce, organic hovering wave,
- * lively tilt/sway, continuous light-sweep gleam, and ambient pulse ripples.
+ * Clean startup splash screen displayed before the login screen.
+ * Displays the WeCollect logo with a smooth three-dot animated loader below it.
  */
 @Composable
 fun SplashScreen(
     onSplashFinished: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // Entrance animation animatables
-    val logoScale = remember { Animatable(0.40f) }
+    val logoScale = remember { Animatable(0.85f) }
     val logoAlpha = remember { Animatable(0f) }
-    val logoTilt = remember { Animatable(-9f) }
-    val auraScale = remember { Animatable(0.3f) }
-    val auraAlpha = remember { Animatable(0f) }
+    val dotsAlpha = remember { Animatable(0f) }
 
-    // Dynamic continuous looping transitions ("mihetsiketsika tsara")
-    val infiniteTransition = rememberInfiniteTransition(label = "wecollectDynamicMotion")
+    val infiniteTransition = rememberInfiniteTransition(label = "wecollectSplashMotion")
 
-    // 1. Lively vertical floating wave (bobbing motion)
-    val floatY by infiniteTransition.animateFloat(
-        initialValue = -9f,
-        targetValue = 9f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1400, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "floatY"
-    )
-
-    // 2. Playful rhythmic tilt/sway
-    val swayAngle by infiniteTransition.animateFloat(
-        initialValue = -3.2f,
-        targetValue = 3.2f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1700, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "swayAngle"
-    )
-
-    // 3. Subtle breathing scale pulse
-    val breatheScale by infiniteTransition.animateFloat(
-        initialValue = 0.98f,
-        targetValue = 1.05f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "breatheScale"
-    )
-
-    // 4. Luminous shine sweep passing across the logo letters
+    // Subtle luminous shine sweep passing across the logo
     val shimmerSweep by infiniteTransition.animateFloat(
         initialValue = -0.8f,
         targetValue = 1.8f,
@@ -117,83 +84,29 @@ fun SplashScreen(
         label = "shimmerSweep"
     )
 
-    // 5. Dynamic energy ripple ring 1
-    val ripple1 by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2200, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "ripple1"
-    )
-
-    // 6. Dynamic energy ripple ring 2
-    val ripple2 by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2200, delayMillis = 1100, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "ripple2"
-    )
-
-    // 7. Ambient particle float phase
-    val particlePhase by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2 * Math.PI).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(3200, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "particlePhase"
-    )
-
     LaunchedEffect(Unit) {
-        // Step 1: High-energy entrance with spring bounce & tilt rebound
-        launch {
-            auraAlpha.animateTo(
-                targetValue = 1f,
-                animationSpec = tween(durationMillis = 600, easing = FastOutSlowInEasing)
-            )
-        }
-        launch {
-            auraScale.animateTo(
-                targetValue = 1f,
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                    stiffness = Spring.StiffnessLow
-                )
-            )
-        }
         launch {
             logoAlpha.animateTo(
                 targetValue = 1f,
-                animationSpec = tween(durationMillis = 450, easing = FastOutLinearInEasing)
+                animationSpec = tween(durationMillis = 400, easing = FastOutLinearInEasing)
             )
         }
         launch {
-            logoTilt.animateTo(
-                targetValue = 0f,
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                    stiffness = Spring.StiffnessLow
-                )
+            delay(180)
+            dotsAlpha.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing)
             )
         }
         logoScale.animateTo(
             targetValue = 1f,
             animationSpec = spring(
                 dampingRatio = Spring.DampingRatioMediumBouncy,
-                stiffness = Spring.StiffnessLow
+                stiffness = Spring.StiffnessMediumLow
             )
         )
 
-        // Hold long enough to showcase the dynamic motion and shine (~2.4s)
-        delay(2400)
-
-        // Seamlessly complete splash and transition to login
+        delay(2100)
         onSplashFinished()
     }
 
@@ -214,8 +127,10 @@ fun SplashScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .testTag("splash_screen")
             .background(Color.White)
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .testTag("splash_screen")
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -223,120 +138,118 @@ fun SplashScreen(
             ),
         contentAlignment = Alignment.Center
     ) {
-        // Dynamic expanding energy ripples behind the logo
-        Canvas(
-            modifier = Modifier
-                .size(360.dp)
-                .alpha(auraAlpha.value)
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
-            val centerOffset = Offset(size.width / 2f, size.height / 2f)
-            val maxRadius = size.minDimension / 2f
-
-            // Ripple 1 (Warm signature orange)
-            val r1 = ripple1 * maxRadius
-            val a1 = (1f - ripple1) * 0.35f
-            if (a1 > 0f) {
-                drawCircle(
-                    color = Color(0xFFF97316).copy(alpha = a1),
-                    radius = r1,
-                    center = centerOffset,
-                    style = Stroke(width = 3.dp.toPx())
-                )
-            }
-
-            // Ripple 2 (Signature deep electric blue)
-            val r2 = ripple2 * maxRadius
-            val a2 = (1f - ripple2) * 0.30f
-            if (a2 > 0f) {
-                drawCircle(
-                    color = Color(0xFF0284C7).copy(alpha = a2),
-                    radius = r2,
-                    center = centerOffset,
-                    style = Stroke(width = 2.5.dp.toPx())
-                )
-            }
-
-            // Playful orbiting sparkle particles
-            val particleColors = listOf(
-                Color(0xFFF97316),
-                Color(0xFF0284C7),
-                Color(0xFFFB923C),
-                Color(0xFF38BDF8)
-            )
-            val numParticles = 6
-            for (i in 0 until numParticles) {
-                val angle = particlePhase + (i * (2 * Math.PI / numParticles).toFloat())
-                val orbitX = centerOffset.x + (125.dp.toPx() * cos(angle))
-                val orbitY = centerOffset.y + (48.dp.toPx() * sin(angle * 1.5f))
-                val particleAlpha = ((sin(angle * 2f) + 1f) / 2f) * 0.55f * auraAlpha.value
-                val particleColor = particleColors[i % particleColors.size]
-
-                drawCircle(
-                    color = particleColor.copy(alpha = particleAlpha),
-                    radius = (2.5f + sin(angle * 3f)).dp.toPx(),
-                    center = Offset(orbitX, orbitY)
-                )
-            }
-        }
-
-        // Ambient glowing radial aura centered behind WeCollect logo
-        Box(
-            modifier = Modifier
-                .size(310.dp)
-                .scale(auraScale.value * breatheScale)
-                .alpha(auraAlpha.value * 0.90f)
-                .background(
-                    Brush.radialGradient(
-                        colors = listOf(
-                            Color(0xFFF97316).copy(alpha = 0.20f), // Warm WeCollect orange
-                            Color(0xFF0284C7).copy(alpha = 0.12f), // Deep WeCollect blue
-                            Color(0xFF38BDF8).copy(alpha = 0.05f),
-                            Color.Transparent
+            Image(
+                painter = painterResource(id = R.drawable.ic_wecollect_logo),
+                contentDescription = "WeCollect",
+                modifier = Modifier
+                    .width(260.dp)
+                    .height(80.dp)
+                    .graphicsLayer {
+                        scaleX = logoScale.value
+                        scaleY = logoScale.value
+                        alpha = logoAlpha.value
+                        compositingStrategy = CompositingStrategy.Offscreen
+                    }
+                    .drawWithContent {
+                        drawContent()
+                        val sweepCenter = shimmerSweep * size.width
+                        val shineWidth = size.width * 0.45f
+                        val sweepBrush = Brush.linearGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                Color.White.copy(alpha = 0.35f),
+                                Color.White.copy(alpha = 0.75f),
+                                Color.White.copy(alpha = 0.35f),
+                                Color.Transparent
+                            ),
+                            start = Offset(sweepCenter - shineWidth / 2f, 0f),
+                            end = Offset(sweepCenter + shineWidth / 2f, size.height)
                         )
-                    ),
-                    shape = CircleShape
-                )
-        )
+                        drawRect(
+                            brush = sweepBrush,
+                            blendMode = BlendMode.SrcAtop
+                        )
+                    }
+                    .padding(horizontal = 16.dp)
+                    .testTag("wecollect_splash_logo"),
+                contentScale = ContentScale.Fit
+            )
 
-        // The dynamic, animated WeCollect logo with bounce, sway, float, and shining light gleam
-        Image(
-            painter = painterResource(id = R.drawable.ic_wecollect_logo),
-            contentDescription = "WeCollect",
-            modifier = Modifier
-                .width(270.dp)
-                .height(82.dp)
-                .graphicsLayer {
-                    translationY = floatY
-                    rotationZ = logoTilt.value + swayAngle
-                    scaleX = logoScale.value * breatheScale
-                    scaleY = logoScale.value * breatheScale
-                    alpha = logoAlpha.value
-                    compositingStrategy = CompositingStrategy.Offscreen
-                }
-                .drawWithContent {
-                    drawContent()
-                    // Luminous diagonal shine bar sweeping dynamically across the letters
-                    val sweepCenter = shimmerSweep * size.width
-                    val shineWidth = size.width * 0.45f
-                    val sweepBrush = Brush.linearGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            Color.White.copy(alpha = 0.40f),
-                            Color.White.copy(alpha = 0.85f),
-                            Color.White.copy(alpha = 0.40f),
-                            Color.Transparent
-                        ),
-                        start = Offset(sweepCenter - shineWidth / 2f, 0f),
-                        end = Offset(sweepCenter + shineWidth / 2f, size.height)
+            Spacer(modifier = Modifier.height(28.dp))
+
+            SplashThreeDotsLoader(
+                modifier = Modifier
+                    .alpha(dotsAlpha.value)
+                    .height(28.dp)
+                    .testTag("splash_three_dots_loader")
+            )
+        }
+    }
+}
+
+/**
+ * Animated three-dots loader displayed prior to the login screen.
+ */
+@Composable
+fun SplashThreeDotsLoader(
+    modifier: Modifier = Modifier,
+    dotSize: Dp = 10.dp,
+    spaceBetween: Dp = 10.dp,
+    travelDistance: Dp = 9.dp
+) {
+    val dotColors = listOf(
+        Color(0xFF0284C7),
+        Color(0xFFF97316),
+        Color(0xFF0284C7)
+    )
+
+    val dots = listOf(
+        remember { Animatable(0f) },
+        remember { Animatable(0f) },
+        remember { Animatable(0f) }
+    )
+
+    dots.forEachIndexed { index, animatable ->
+        LaunchedEffect(animatable) {
+            delay(index * 160L)
+            animatable.animateTo(
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = keyframes {
+                        durationMillis = 960
+                        0.0f at 0 using FastOutSlowInEasing
+                        1.0f at 300 using FastOutSlowInEasing
+                        0.0f at 600 using FastOutSlowInEasing
+                        0.0f at 960 using FastOutSlowInEasing
+                    },
+                    repeatMode = RepeatMode.Restart
+                )
+            )
+        }
+    }
+
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(spaceBetween),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        dots.forEachIndexed { index, animatable ->
+            val value = animatable.value
+            val color = dotColors[index % dotColors.size]
+            Box(
+                modifier = Modifier
+                    .size(dotSize)
+                    .offset(y = -travelDistance * value)
+                    .scale(0.85f + (0.30f * value))
+                    .background(
+                        color = color.copy(alpha = 0.45f + (0.55f * value)),
+                        shape = CircleShape
                     )
-                    drawRect(
-                        brush = sweepBrush,
-                        blendMode = BlendMode.SrcAtop
-                    )
-                }
-                .padding(horizontal = 16.dp)
-                .testTag("wecollect_splash_logo"),
-            contentScale = ContentScale.Fit
-        )
+            )
+        }
     }
 }
